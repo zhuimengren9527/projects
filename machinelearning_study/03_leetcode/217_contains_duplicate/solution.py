@@ -1,10 +1,12 @@
 class Solution:
     # 方法1：哈希表法 (时间 O(n), 空间 O(n))
     def containsDuplicate_v1(self, nums: list[int]) -> bool:
-        count = {}
+        seen = set()
         for n in nums:
-            if n in count: return True
-            count[n] = 1
+            if n in seen:
+                return True
+            else:
+                seen.add(n)
         return False
 
     # 方法2：集合长度法 (代码最简洁)
