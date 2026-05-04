@@ -1,33 +1,239 @@
-# 🎈带有业务杂质的连续数值型数据的清洗（带单位）
-* **1. 为什么对金额数据，慎用 value_counts()**
-    - 在处理日期或状态（如 VIP、SVIP）时，value_counts() 是神技，因为它们的种类是有限的（离散数据）。但是，金额是连续数据。假设有 100 万条订单，可能就有 90 万个不同的金额数值（比如 15.99, 16.00, 16.01...）。如果对它用value_counts()，屏幕上会立刻刷出几十万行结果，肉眼根本无法从中找出那些混进去的“文本毒瘤”。
-    -  **💡 专属侦察兵：反向探测法**
-    对于连续数字列，大厂的做法不是看全貌，而是只抓异类。我们会利用 to_numeric 的报错机制，先不急着覆盖原数据，而是做一次“模拟排雷”：
+# 🎈 连续数值型数据清洗（含单位 / 混合文本）
 
-        ```python
-        # 1. 模拟强制转换，不合规的变成 NaN
-        temp_parsed = pd.to_numeric(df_exam['total_spend'], errors='coerce')
+---
 
-        # 2. 揪出那些变成了 NaN 的行（也就是原本混有文本的行）
-        dirty_mask = temp_parsed.isna()
+## ⚠️ 1. 为什么金额字段慎用 `value_counts()`
 
-        # 3. 只打印这些“嫌疑犯”的本来面目
-        print("🚨 发现以下非纯数字的脏数据：")
-        print(df_exam.loc[dirty_mask, 'total_spend'])
-        ```
-* **2. 混入字符就被踢成 NaN，岂不是误杀？**
+### 📌 问题本质
 
-    - 如果发现“嫌疑犯”长这样：`Pending_Audit`（纯文本），那直接 NaN 杀掉完全没毛病。但如果嫌疑犯长这样：$1599.50、8848元、100,000.00（带逗号的千分位）—— 这可是真金白银的有效业务数据！如果用errors='coerce' 一锤子砸下去，它们全都会变成 NaN，这就叫严重的业务事故。
+* 金额属于**连续型数据**
+* 高基数（High Cardinality）
 
-    * **🔪 破局之法：从“大锤”换成“手术刀” (Regex 提取)**
-    当侦察兵发现存在可以抢救的带字符数字时，就不能用 coerce 这种莽夫操作了。需要用正则表达式（Regex），把数字和小数点从文本里“抠”出来：
+例如：
 
-        ```python
-        # 使用正则表达式提取：只保留数字、小数点和负号
-        # [^\d\.-] 的意思是：匹配所有【不是】数字(\d)、小数点(\.)、负号(-)的字符
-        # regex=True 表示开启正则，把这些非数字字符替换为空字符串 ''
-        df_exam['spend_clean'] = df_exam['total_spend'].astype(str).str.replace(r'[^\d\.-]', '', regex=True)
+* 100 万条订单
+* 可能 90 万个不同金额
 
-        # 抠干净之后，里面就只剩纯粹的数字字符串了，此时再安全地转换
-        df_exam['spend_clean'] = pd.to_numeric(df_exam['spend_clean'], errors='coerce')
-        ```
+```python
+df['amount'].value_counts()
+```
+
+👉 结果：
+
+* 输出极其庞大
+* 无法人工识别异常值
+* 性能浪费
+
+---
+
+### ✅ 正确思路：只关注“异常值”
+
+#### 🔍 反向探测法（推荐）
+
+```python
+temp_parsed = pd.to_numeric(df['total_spend'], errors='coerce')
+
+dirty_mask = temp_parsed.isna()
+
+df_dirty = df.loc[dirty_mask, 'total_spend']
+```
+
+👉 含义：
+
+* 无法解析为数字 → 转为 NaN
+* 只筛出异常数据（文本 / 混合值）
+
+---
+
+## ⚠️ 2. `errors='coerce'` 的风险
+
+### 📌 问题
+
+以下数据会被误杀：
+
+* `$1599.50`
+* `8848元`
+* `100,000.00`
+
+👉 这些是**有效业务数据**，但包含非数字字符
+
+---
+
+## 🔪 3. 正确做法：结构化提取（Regex）
+
+### 🎯 目标
+
+将原始字段拆解为：
+
+* 货币符号（currency）
+* 数值部分（amount）
+
+---
+
+### 🧪 Step 1：正则提取
+
+```python
+extracted = df['monthly_fee'].astype(str).str.extract(
+    r'([^\d\.\-]+)?([\d\.\-]+)'
+)
+
+extracted.columns = ['currency', 'raw_amount']
+```
+
+#### 📌 说明
+
+* `([^\d\.\-]+)?`
+
+  * 匹配货币符号（可选）
+* `([\d\.\-]+)`
+
+  * 匹配数字（含小数 / 负号）
+
+---
+
+### 🧼 Step 2：清洗货币字段
+
+```python
+extracted['currency'] = (
+    extracted['currency']
+    .fillna('$')
+    .str.strip()
+)
+```
+
+👉 注意：
+
+* 原始数据可能包含空格
+* 正则不会自动清理空白
+
+---
+
+### 🔢 Step 3：安全数值转换
+
+```python
+extracted['raw_amount'] = pd.to_numeric(
+    extracted['raw_amount'],
+    errors='coerce'
+)
+```
+
+---
+
+### 💱 Step 4：汇率统一
+
+```python
+rate_map = {
+    '$': 1.0,
+    '¥': 0.14
+}
+
+extracted['exchange_rate'] = (
+    extracted['currency']
+    .map(rate_map)
+    .fillna(1.0)
+)
+
+df['amount_usd'] = (
+    extracted['raw_amount'] *
+    extracted['exchange_rate']
+)
+```
+
+---
+
+## ⚖️ 4. 业务规则校验
+
+### 🚫 负值处理（示例）
+
+```python
+mask_negative = df['amount_usd'] < 0
+
+df.loc[mask_negative, 'amount_usd'] = np.nan
+```
+
+👉 示例逻辑：
+
+* 订阅费 < 0 → 异常数据
+
+---
+
+## 🧠 5. 类型优化（内存压缩）
+
+```python
+df['amount_usd'] = df['amount_usd'].astype('Float32')
+```
+
+👉 优势：
+
+* 节省内存
+* 适合大数据场景
+
+---
+
+## 🔧 6. 实战增强建议（重要）
+
+### ✅ 处理千分位
+
+```python
+df['monthly_fee'] = (
+    df['monthly_fee']
+    .astype(str)
+    .str.replace(',', '')
+)
+```
+
+---
+
+### ✅ 更稳健的正则（支持符号在前或后）
+
+```python
+r'([^\d\.\-]+)?\s*([\d,\.]+)\s*([^\d\.\-]+)?'
+```
+
+👉 可覆盖：
+
+* `$100`
+* `100元`
+* `USD 100`
+
+---
+
+### ✅ 避免多小数点异常
+
+```python
+mask_invalid = extracted['raw_amount'].str.count(r'\.') > 1
+```
+
+---
+
+## 🧩 总结
+
+连续数值清洗的核心不是“转数字”，而是：
+
+### 1️⃣ 异常识别优先
+
+* 不看整体分布
+* 只抓解析失败的数据
+
+### 2️⃣ 保留业务信息
+
+* 不盲目 `coerce`
+* 先拆解再转换
+
+### 3️⃣ 结构化处理
+
+* currency + amount 分离
+* 再统一标准
+
+### 4️⃣ 最终统一
+
+* 单位对齐（如 USD）
+* 类型压缩（Float32）
+
+---
+
+## 📌 一句话原则
+
+> **先识别异常 → 再结构化 → 最后数值化**
+
+---
