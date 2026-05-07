@@ -37,3 +37,30 @@
     *   **解法**：使用 `@lru_cache(maxsize=100000)`。强制设定容量上限，满了自动踢出“最久未被查询”的垃圾脏词。
 *   **防线 3：变量隔离 (OOP 面向对象)**
     *   将预排序的标准库和缓存字典，封装进 `class EntityResolver` 内部。避免在洗“公司名”和“城市名”时发生全局变量污染。
+
+* **示例代码：**
+```python
+from thefuzz import process
+import pandas as pd
+
+# 【唯一需要记住的优化】：在外面挂一个空字典当小本子
+simple_cache = {}
+
+def clean_data_basic(dirty_word, standard_list):
+    # 动作 1：遇到空值直接拒绝，防止报错
+    if pd.isna(dirty_word):
+        return "Unknown"
+        
+    # 动作 2：查小本子。算过的直接拿走，绝不算第二次
+    if dirty_word in simple_cache:
+        return simple_cache[dirty_word]
+        
+    # 动作 3：干活。只挑最高分，且必须及格 (>= 85)
+    best_match, score = process.extractOne(dirty_word, standard_list)
+    result = best_match if score >= 85 else "Unknown"
+    
+    # 动作 4：把算完的结果记入小本子
+    simple_cache[dirty_word] = result
+    
+    return result
+```
