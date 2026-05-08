@@ -89,6 +89,7 @@ FROZEN_BRANDS = tuple(MASTER_BRANDS)
 # ==========================================
 # 引擎制造区
 # ==========================================
+# 使用最近最少淘汰机制，限制脏数据字典的最大容量，防止内存撑爆
 @lru_cache(maxsize=1000)
 # 【看这里！极其重要】：给 standard_words 赋了默认值 FROZEN_BRANDS
 def clean_brand_ultimate(dirty_word: str, standard_words: tuple = FROZEN_BRANDS) -> str:
