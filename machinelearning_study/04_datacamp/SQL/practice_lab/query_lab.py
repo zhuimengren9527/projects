@@ -8,12 +8,17 @@ conn = sqlite3.connect(db_path)
 # ========================================================
 # 2. 【你的 SQL 练习区】把你的 SQL 代码丢进下面这个三引号里
 # ========================================================
+
 sql_query = """
-SELECT country_code,AVG(population) AS avg_pop
+SELECT main_c.name,main_c.country_code,main_c.population
+FROM cities AS main_c
+WHERE main_c.population > (
+SELECT AVG(population)
 FROM cities
-GROUP BY country_code
-HAVING AVG(population) > 10000000
-ORDER BY avg_pop DESC;
+WHERE country_code = main_c.country_code 
+-- 限制子查询计算的人口平均值为外层城市(main_c)所在国家的人口平均值，如果不限制，计算出来的人口平均值就是全球人口平均值
+)
+
 """
 # ========================================================
 
