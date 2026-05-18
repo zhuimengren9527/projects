@@ -10,15 +10,14 @@ conn = sqlite3.connect(db_path)
 # ========================================================
 
 sql_query = """
-SELECT main_c.name,main_c.country_code,main_c.population
-FROM cities AS main_c
-WHERE main_c.population > (
-SELECT AVG(population)
-FROM cities
-WHERE country_code = main_c.country_code 
--- 限制子查询计算的人口平均值为外层城市(main_c)所在国家的人口平均值，如果不限制，计算出来的人口平均值就是全球人口平均值
-)
-
+SELECT normal_c.name AS 城市,
+    capital_c.name AS 它家首都,
+    (capital_c.population - normal_c.population) AS 人口差值
+FROM cities AS normal_c
+INNER JOIN cities AS capital_c
+ON normal_c.country_code = capital_c.country_code
+WHERE normal_c.capital = ''
+    AND capital_c.name = capital_c.capital;
 """
 # ========================================================
 
