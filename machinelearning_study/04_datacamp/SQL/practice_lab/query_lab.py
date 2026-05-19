@@ -1,30 +1,41 @@
 import sqlite3
 import pandas as pd
 
-# 1. 锁定你刚才灌好数据的硬盘文件
-db_path = r"D:\projects\machinelearning_study\raw_data\datacamp_study\SQL\world.db"
+# 1. 链接物理路径
+db_path = r"C:\projects\machinelearning_study\raw_data\datacamp\SQL\world.db"
 conn = sqlite3.connect(db_path)
 
-# ========================================================
-# 2. 【你的 SQL 练习区】把你的 SQL 代码丢进下面这个三引号里
-# ========================================================
-
+# ==================== 轨道一：SQL 端精准猎杀 ====================
 sql_query = """
-SELECT name,country_code,population,
-    DENSE_RANK() OVER(
-        PARTITION BY country_code
-        ORDER BY population DESC
-        )AS country_pop_rank
-FROM cities;
+SELECT DISTINCT co.code,MIN(la.lang_name) AS representative_lang
+FROM languages AS la
+INNER JOIN countries AS co
+ON la.country_code = co.code
+GROUP BY co.code;
 """
-# ========================================================
+sql_result = pd.read_sql_query(sql_query, conn)
+print(f"打印国家语言表")
+print(sql_result)                    # 打印前10行看看是谁
 
-# 3. 用 Pandas 把数据捞出来并打印成漂亮的表格
-try:
-    df = pd.read_sql_query(sql_query, conn)
-    print("\n📊 【查询结果】:")
-    print(df.to_string(index=False)) # 不打印行索引，保持最干净的 SQL 形状
-except Exception as e:
-    print(f"\n❌ 【SQL 语法报错】: {e}")
+print("\n" + "="*60 + "\n")
 
+# ==================== 轨道二：Pandas 端内存清洗 ====================
+df_languages = pd.read_sql_query("SELECT * FROM languages;", conn)
+df_countries = pd.read_sql_query("SELECT * FROM countries;", conn)
+
+# 1. 物理合并
+df_pandas_merged = pd.merge(
+    df_languages,                             
+    df_countries,                                
+    left_on='country_code', 
+    right_on='code', 
+    how='inner',
+).drop('country_code', axis=1)
+
+df_pandas_merged_cleaned = df_pandas_merged.drop_duplicates(subset=['code'])
+print(df_pandas_merged_cleaned)
+
+
+
+# 关闭物理连接
 conn.close()
