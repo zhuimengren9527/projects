@@ -10,14 +10,12 @@ conn = sqlite3.connect(db_path)
 # ========================================================
 
 sql_query = """
-SELECT normal_c.name AS 城市,
-    capital_c.name AS 它家首都,
-    (capital_c.population - normal_c.population) AS 人口差值
-FROM cities AS normal_c
-INNER JOIN cities AS capital_c
-ON normal_c.country_code = capital_c.country_code
-WHERE normal_c.capital = ''
-    AND capital_c.name = capital_c.capital;
+SELECT name,country_code,population,
+    DENSE_RANK() OVER(
+        PARTITION BY country_code
+        ORDER BY population DESC
+        )AS country_pop_rank
+FROM cities;
 """
 # ========================================================
 
