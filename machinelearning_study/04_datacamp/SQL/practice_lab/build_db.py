@@ -1,106 +1,104 @@
-# import sqlite3
-
-# # 1. 强行锁定你的本地文件路径（物理闭环）
-# db_path = r"C:\projects\machinelearning_study\raw_data\datacamp\SQL\world.db"
-
-# # 2. 物理连接数据库文件
-# conn = sqlite3.connect(db_path)
-# cursor = conn.cursor()
-
-# print("正在强行在硬盘中建立表结构...")
-
-# # 3. 强行砸入創表 SQL
-# cursor.executescript("""
-# DROP TABLE IF EXISTS cities;
-# DROP TABLE IF EXISTS countries;
-
-# CREATE TABLE countries (
-#     code TEXT PRIMARY KEY,
-#     name TEXT,
-#     continent TEXT
-# );
-
-# CREATE TABLE cities (
-#     name TEXT,
-#     country_code TEXT,
-#     population INTEGER,
-#     urbanarea_pop INTEGER,
-#     capital TEXT
-# );
-# """)
-
-# # 4. 灌入国家与城市测试数据
-# countries_data = [
-#     ('CHN', 'China', 'Asia'),
-#     ('IND', 'India', 'Asia'),
-#     ('USA', 'United States', 'North America'),
-#     ('SGP', 'Singapore', 'Asia'),
-#     ('MCO', 'Monaco', 'Europe')
-# ]
-
-# cities_data = [
-#     ('Beijing', 'CHN', 21000000, 21000000, 'Beijing'),
-#     ('Shanghai', 'CHN', 24000000, 24000000, ''),
-#     ('New Delhi', 'IND', 16000000, 16000000, 'New Delhi'),
-#     ('Mumbai', 'IND', 12000000, 12000000, ''),
-#     ('New York', 'USA', 8000000, 8000000, ''),
-#     ('Washington DC', 'USA', 700000, 700000, 'Washington DC'),
-#     ('Singapore', 'SGP', 5600000, 5600000, 'Singapore'),
-#     ('Monaco', 'MCO', 38000, 38000, 'Monaco')
-# ]
-
-# cursor.executemany("INSERT INTO countries VALUES (?, ?, ?);", countries_data)
-# cursor.executemany("INSERT INTO cities VALUES (?, ?, ?, ?, ?);", cities_data)
-
-# # 5. 提交并锁定到硬盘，关闭通道
-# conn.commit()
-# conn.close()
-
-# print("🎉 恭喜！本地测试数据科学实验舱已被 Python 物理砸入成功！")
-
-
-
-
-
-
+import os
 import sqlite3
 
-db_path = r"C:\projects\machinelearning_study\raw_data\datacamp\SQL\world.db"
-conn = sqlite3.connect(db_path)
+# 1. 锁死你的绝对路径
+DB_PATH = r"C:\projects\machinelearning_study\raw_data\datacamp\SQL\world.db"
+
+# 2. 自动检查并创建多层文件夹，防止因为文件夹不存在而报错
+db_dir = os.path.dirname(DB_PATH)
+if db_dir and not os.path.exists(db_dir):
+    os.makedirs(db_dir, exist_ok=True)
+    print(f"📁 已自动创建目标文件夹: {db_dir}")
+
+# 3. 连接数据库（如果文件已存在，会直接覆盖重建表）
+conn = sqlite3.connect(DB_PATH)
 cursor = conn.cursor()
 
-print("开始在硬盘上锻造 languages 表...")
+# 4. 安全清空旧表
+cursor.execute("DROP TABLE IF EXISTS cities;")
+cursor.execute("DROP TABLE IF EXISTS countries;")
+cursor.execute("DROP TABLE IF EXISTS languages;")
 
-# 1. 物理建表
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS languages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+# 5. 建立标准的表结构
+cursor.execute(
+    """
+CREATE TABLE countries (
+    code TEXT PRIMARY KEY,
+    name TEXT,
+    continent TEXT
+);
+"""
+)
+
+cursor.execute(
+    """
+CREATE TABLE cities (
+    name TEXT,
+    country_code TEXT,
+    population INTEGER,
+    urbanarea_pop INTEGER,
+    capital TEXT
+);
+"""
+)
+
+cursor.execute(
+    """
+CREATE TABLE languages (
+    id INTEGER PRIMARY KEY,
     country_code TEXT,
     lang_name TEXT
 );
-""")
-
-# 2. 清理历史遗留（保证每次运行结果一致）
-cursor.execute("DELETE FROM languages;")
-
-# 3. 投毒：精准制造 1对多 的关联基数
-mock_languages_sql = """
-INSERT INTO languages (country_code, lang_name) 
-VALUES 
-    ('CHN', 'Mandarin'), ('CHN', 'Cantonese'), ('CHN', 'Tibetan'),  -- 中国：3行
-    ('IND', 'Hindi'), ('IND', 'English'), ('IND', 'Bengali'),       -- 印度：3行
-    ('USA', 'English'), ('USA', 'Spanish'),                         -- 美国：2行
-    ('SGP', 'English'), ('SGP', 'Malay'), ('SGP', 'Mandarin'), ('SGP', 'Tamil'), -- 新加坡：4行
-    ('MCO', 'French');                                              -- 摩纳哥：1行
-    -- 注意：我们故意没给 ATL, WKD, LIL 这三个孤岛国家分配语言
 """
+)
 
-cursor.execute(mock_languages_sql)
-conn.commit() # 必须落盘！
+# 6. 灌入包含“5大经典陷阱”的真实业务脏数据
+countries_data = [
+    ("CHN", "China", "Asia"),
+    ("IND", "India", "Asia"),
+    ("USA", "United States", "North America"),
+    ("SGP", "Singapore", "Asia"),
+    ("MCO", "Monaco", "Europe"),
+    ("ATL", "Atlantis", None),  # 陷阱1：没有大洲的神秘国家
+    ("WKD", "Wakanda", None),  # 陷阱2：完全没有城市和语言登记的国家
+]
 
-# 验证资产
-cursor.execute("SELECT COUNT(*) FROM languages;")
-total_langs = cursor.fetchone()[0]
-print(f"投毒完成！ languages 表现已存在，共包含 {total_langs} 行极其危险的一对多记录。")
+cities_data = [
+    ("Beijing", "CHN", 21000000, 21000000, "Beijing"),
+    ("Shanghai", "CHN", 24000000, 24000000, None),
+    ("New Delhi", "IND", 16000000, 16000000, "New Delhi"),
+    ("Mumbai", "IND", 12000000, 12000000, None),
+    ("New York", "USA", 8000000, 8000000, None),
+    ("Washington DC", "USA", 700000, 700000, "Washington DC"),
+    ("Singapore", "SGP", 5600000, 5600000, "Singapore"),
+    ("Monaco", "MCO", 38000, 38000, "Monaco"),
+    ("Gotham", "XYZ", 10000000, 10000000, None),  # 陷阱3：孤儿城市，XYZ国家根本不存在
+]
 
+languages_data = [
+    (1, "CHN", "Mandarin"),
+    (2, "CHN", "Cantonese"),
+    (3, "CHN", "Tibetan"),
+    (4, "IND", "Hindi"),
+    (5, "IND", "English"),
+    (6, "IND", "Bengali"),
+    (7, "USA", "English"),
+    (8, "USA", "Spanish"),
+    (9, "SGP", "English"),
+    (10, "SGP", "Malay"),
+    (11, "SGP", "Mandarin"),
+    (12, "SGP", "Tamil"),
+    (13, "MCO", "French"),
+    (14, "MCO", "French"),  # 陷阱4：完全重复的语言录入记录
+    (15, "atl", "Atlantian"),  # 陷阱5：小写的 'atl'，考验关联时的不规范输入
+]
+
+cursor.executemany("INSERT INTO countries VALUES (?, ?, ?);", countries_data)
+cursor.executemany("INSERT INTO cities VALUES (?, ?, ?, ?, ?);", cities_data)
+cursor.executemany("INSERT INTO languages VALUES (?, ?, ?);", languages_data)
+
+conn.commit()
 conn.close()
+
+print(f"🔥 完美闭环！数据库已成功创建并在该绝对路径锁死:\n📍 {DB_PATH}")
+print("所有的脏数据和多对多炸弹已经埋好，随时可以开炮。")
