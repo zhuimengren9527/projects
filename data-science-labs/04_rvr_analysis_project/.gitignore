@@ -1,0 +1,50 @@
+# =====================================================================
+# 🛡️ 仁亚东的 data-science-labs 工业级完全体拦截账本 (2026最终版)
+# =====================================================================
+data/
+__pycache__/
+.DS_Store
+
+# 1. 隔离重量级数据源与本地数据库
+raw_data/
+*.csv
+*.sqlite
+*.db
+*.xlsx
+*.json
+*.parquet
+
+# 2. 屏蔽 Jupyter 和 Python 底层自动缓存与测试缓存
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+*.pyd
+
+# 3. 刚性隔离本地大体积虚拟环境
+.venv/
+venv/
+ENV/
+
+# 4. 机器学习模型权重与序列化文件
+*.pkl
+*.pickle
+*.bst
+*.h5
+*.onnx
+*.torch
+*.pt
+*.pth
+
+# 5. 屏蔽系统垃圾、日志与敏感密钥
+.DS_Store
+Thumbs.db
+*.log
+.env
+
+# 6. 允许同步 VSCode 核心配置，但屏蔽本地历史记录
+.vscode/.history/
+.vscode/project/
+*.code-workspace
