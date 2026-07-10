@@ -162,4 +162,26 @@ WHERE rn = 1
 
 结束。
 
+## 今日成就 （2026-07-10）
 
+## 02_top_n_per_group
+
+本题练习 `Ranking Pattern` 中的 `Top N Per Group` 问题。
+
+核心思路：
+
+1. 按分组字段进行 `PARTITION` / `groupby`
+2. 按排序字段降序排列 `ORDER BY DESC`/ `sort_values(by=,ascending=False)`
+3. 使用 `ROW_NUMBER()` / `cumcount() + 1` 生成组内排名
+4. 筛选 `rn <= N`,`WHERE` / `.loc[]`
+
+
+**注意点：**
+
+链式写法中，如果要用 `loc` 筛选刚刚 `assign` 出来的新列，应使用：
+
+`.loc[lambda x: x['rn'] <= 2]`
+
+而不是：
+
+`.loc[df['rn'] <= 2]`
