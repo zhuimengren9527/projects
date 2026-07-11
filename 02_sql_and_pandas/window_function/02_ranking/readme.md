@@ -185,3 +185,24 @@ WHERE rn = 1
 而不是：
 
 `.loc[df['rn'] <= 2]`
+
+## 今日成就（2026-07-11）
+
+### 03_rank_dense_rank_comparison
+
+**重点：**
+* **处理重复排名时：**
+    - `ROW_NUMBER()` 强行为相同名次排先后。
+    - `RANK()` 为重复数据排相同名次，并在后继排名中跳号
+    - `DENSE_RANK()` 为重复数据排相同名次，后继名次不跳号。
+* **分组排序时：**
+    - `ROW_NUMBER`：可以加次级排序，因为它本来就要强行分出先后。
+
+    - `RANK / DENSE_RANK`：如果要保留 `目标排序列` 相同就是并列，就只能按 ``目标列`` 排名，不能把 `次级排序列` 加进去破坏并列关系。
+
+* **算轨道方法对应：**
+    |目标|SQL方法|PANDAS方法|
+    |----|------|----------|
+    |生成强制编号	|`ROW_NUMBER()`|	`groupby('device_id').cumcount() + 1`|
+    |生成普通排名，保留并列但跳号	|`RANK()`	|`rank(method='min', ascending=False)`|
+    |生成密集排名，保留并列但不跳号|	`DENSE_RANK()`|	`rank(method='dense', ascending=False)`|
