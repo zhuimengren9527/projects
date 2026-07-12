@@ -830,3 +830,383 @@ groupby()
 看到“截至当前的平均值”“累计平均值”“到目前为止的平均金额”，优先判断为：
 
 > Cumulative Analysis / Running Average
+
+# 04_moving_average
+
+## 题型名称
+
+Moving Average
+
+中文理解：
+
+> 移动平均 / 滚动平均问题
+
+---
+
+## 题目目标
+
+给定一张用户订单表，计算：
+
+> 每个用户每次下单时，最近 2 次订单的平均消费金额。
+
+这里的“最近 2 次”指：
+
+```text
+当前订单 + 上一笔订单
+```
+
+如果当前用户还只有 1 笔订单，就只用当前这一笔计算平均值。
+
+最终输出字段：
+
+| 字段名 | 含义 |
+|---|---|
+| user_id | 用户 ID |
+| order_time | 下单时间 |
+| order_id | 订单 ID |
+| amount | 当前订单金额 |
+| moving_avg_2_amount | 最近 2 次订单的平均消费金额 |
+
+---
+
+## 一、核心理解
+
+Moving Average 关注的是：
+
+> 最近 N 条记录的平均值。
+
+它和 Running Average 的区别是：
+
+| 类型 | 含义 | Pandas | SQL |
+|---|---|---|---|
+| Running Average | 从第一条到当前条 | `expanding().mean()` | `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` |
+| Moving Average | 最近 N 条 | `rolling(N).mean()` | `ROWS BETWEEN N-1 PRECEDING AND CURRENT ROW` |
+
+本题是最近 2 次订单平均金额，所以窗口是：
+
+```text
+当前行 + 上一行
+```
+
+---
+
+## 二、SQL / Pandas 双轨对应
+
+| 目的 | SQL | Pandas |
+|---|---|---|
+| 按用户分组 | `PARTITION BY user_id` | `groupby('user_id')` |
+| 按订单顺序排序 | `ORDER BY order_time, order_id` | `sort_values(['user_id', 'order_time', 'order_id'])` |
+| 最近 2 条窗口 | `ROWS BETWEEN 1 PRECEDING AND CURRENT ROW` | `rolling(2, min_periods=1)` |
+| 计算平均值 | `AVG(amount) OVER(...)` | `.mean()` |
+| 处理多级索引 | SQL 不需要 | `reset_index(level=0, drop=True)` |
+
+---
+
+## 三、SQL 模板
+
+```sql
+SELECT
+    user_id,
+    order_time,
+    order_id,
+    amount,
+    AVG(amount) OVER(
+        PARTITION BY user_id
+        ORDER BY order_time, order_id
+        ROWS BETWEEN 1 PRECEDING AND CURRENT ROW
+    ) AS moving_avg_2_amount
+FROM df
+ORDER BY user_id, order_time, order_id;
+```
+
+核心理解：
+
+```text
+PARTITION BY user_id
+= 每个用户单独计算
+
+ORDER BY order_time, order_id
+= 每个用户内部按订单顺序排列
+
+ROWS BETWEEN 1 PRECEDING AND CURRENT ROW
+= 当前行 + 上一行
+
+AVG(amount)
+= 对窗口内的订单金额求平均
+```
+
+---
+
+## 四、Pandas 模板
+
+```python
+df_pd = (
+    df
+    .sort_values(by=['user_id', 'order_time', 'order_id'])
+    .assign(
+        moving_avg_2_amount=lambda x: (
+            x.groupby('user_id')['amount']
+             .rolling(2, min_periods=1)
+             .mean()
+             .reset_index(level=0, drop=True)
+        )
+    )
+    .reset_index(drop=True)
+)
+```
+
+核心理解：
+
+```text
+groupby('user_id')
+= 每个用户单独滚动计算
+
+rolling(2, min_periods=1)
+= 最近 2 条记录，不足 2 条时只要有 1 条也计算
+
+mean()
+= 对窗口内 amount 求平均
+
+reset_index(level=0, drop=True)
+= 去掉 groupby + rolling 产生的 user_id 外层索引
+```
+
+---
+
+## 五、rolling() 参数理解
+
+### 1. 第一个参数：窗口大小
+
+```python
+rolling(2)
+```
+
+表示窗口总长度为 2。
+
+不是“当前行 + 前面 2 行”，而是：
+
+```text
+当前行 + 前面 1 行
+```
+
+对应关系：
+
+| Pandas | 含义 | SQL 对应 |
+|---|---|---|
+| `rolling(1)` | 当前行自己 | `ROWS BETWEEN CURRENT ROW AND CURRENT ROW` |
+| `rolling(2)` | 当前行 + 前 1 行 | `ROWS BETWEEN 1 PRECEDING AND CURRENT ROW` |
+| `rolling(3)` | 当前行 + 前 2 行 | `ROWS BETWEEN 2 PRECEDING AND CURRENT ROW` |
+| `rolling(N)` | 当前行 + 前 N-1 行 | `ROWS BETWEEN N-1 PRECEDING AND CURRENT ROW` |
+
+所以本题最近 2 次订单平均值，应该使用：
+
+```python
+rolling(2)
+```
+
+而不是：
+
+```python
+rolling(1)
+```
+
+---
+
+### 2. min_periods：最小计算行数
+
+```python
+rolling(2, min_periods=1)
+```
+
+含义是：
+
+```text
+窗口最大长度是 2；
+但只要窗口里至少有 1 条数据，就可以计算。
+```
+
+所以每个用户第一条记录不会是空值，而是等于当前订单金额。
+
+例如：
+
+```text
+amount: 100, 80, 120, 60
+```
+
+`rolling(2, min_periods=1).mean()` 的结果是：
+
+```text
+第 1 行：[100]       → 100
+第 2 行：[100, 80]   → 90
+第 3 行：[80, 120]   → 100
+第 4 行：[120, 60]   → 90
+```
+
+如果写：
+
+```python
+rolling(2, min_periods=2)
+```
+
+则表示：
+
+```text
+必须至少有 2 条数据才计算。
+```
+
+结果会变成：
+
+```text
+第 1 行：[100]       → NaN
+第 2 行：[100, 80]   → 90
+第 3 行：[80, 120]   → 100
+第 4 行：[120, 60]   → 90
+```
+
+---
+
+## 六、expanding() 和 rolling() 的区别
+
+| 方法 | 窗口特点 | 业务含义 |
+|---|---|---|
+| `expanding()` | 从第一行到当前行，窗口越来越大 | 截至当前的累计统计 |
+| `rolling(N)` | 只看最近 N 行，窗口大小固定 | 最近 N 次 / 最近 N 天 / 最近 N 条记录 |
+
+例如：
+
+```text
+amount: 100, 80, 120, 60
+```
+
+`expanding().mean()`：
+
+```text
+[100]                  → 100
+[100, 80]              → 90
+[100, 80, 120]         → 100
+[100, 80, 120, 60]     → 90
+```
+
+`rolling(2).mean()`：
+
+```text
+[100]                  → 默认 NaN，若 min_periods=1 则为 100
+[100, 80]              → 90
+[80, 120]              → 100
+[120, 60]              → 90
+```
+
+一句话记忆：
+
+```text
+expanding = 从开始到当前
+rolling = 最近 N 条
+```
+
+---
+
+## 七、本题容易犯的错误
+
+### 1. 把 rolling(2) 理解错
+
+错误理解：
+
+```text
+rolling(2) = 当前行 + 前面 2 行
+```
+
+正确理解：
+
+```text
+rolling(2) = 当前行 + 前面 1 行
+```
+
+所以：
+
+```text
+rolling(N) = 当前行 + 前面 N-1 行
+```
+
+---
+
+### 2. 把 rolling(1) 写成最近 2 次平均
+
+错误写法：
+
+```python
+.rolling(1, min_periods=1)
+```
+
+问题：
+
+```text
+rolling(1) 只看当前行自己。
+结果会等于 amount 本身，不是最近 2 次平均值。
+```
+
+正确写法：
+
+```python
+.rolling(2, min_periods=1)
+```
+
+---
+
+### 3. 忘记处理 MultiIndex
+
+错误写法：
+
+```python
+x.groupby('user_id')['amount']
+ .rolling(2, min_periods=1)
+ .mean()
+```
+
+问题：
+
+```text
+groupby().rolling().mean() 会产生 MultiIndex。
+索引结构和原 DataFrame 不一致，不能直接 assign。
+```
+
+正确写法：
+
+```python
+x.groupby('user_id')['amount']
+ .rolling(2, min_periods=1)
+ .mean()
+ .reset_index(level=0, drop=True)
+```
+
+---
+
+## 八、记忆点
+
+```text
+SQL:
+AVG(amount) OVER(
+    PARTITION BY 分组字段
+    ORDER BY 排序字段
+    ROWS BETWEEN N-1 PRECEDING AND CURRENT ROW
+)
+
+Pandas:
+groupby()
++ rolling(N, min_periods=1)
++ mean()
++ reset_index(level=0, drop=True)
+```
+
+看到以下关键词，优先判断为：
+
+> Moving Average / Rolling Window
+
+```text
+最近 N 次
+最近 N 天
+最近 N 条
+移动平均
+滚动平均
+短期趋势
+平滑波动
+```
