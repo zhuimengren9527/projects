@@ -1272,3 +1272,996 @@ on=['device_id', 'stat_date']
 ```text
 从语法思维升级到业务语义思维。
 ```
+
+# 04_compare_with_previous_month_same_day
+
+## 题型名称
+
+Compare With Previous Month Same Day
+
+中文理解：
+
+> 与上个月同日比较 / 月环比比较
+
+---
+
+## 一、题目目标
+
+给定一张设备每日报警统计表：
+
+| 字段名 | 含义 |
+|---|---|
+| device_id | 设备 ID |
+| stat_date | 统计日期 |
+| alarm_count | 当天报警次数 |
+
+现在需要计算：
+
+> 每个设备当天报警次数，与上个月同一天相比变化了多少。
+
+最终输出字段：
+
+| 字段名 | 含义 |
+|---|---|
+| device_id | 设备 ID |
+| stat_date | 当前日期 |
+| alarm_count | 当前日期报警次数 |
+| alarm_count_previous_month | 上个月同日报警次数 |
+| alarm_count_diff_month | 当前报警次数 - 上个月同日报警次数 |
+
+---
+
+## 二、核心业务概念
+
+### 1. 环比
+
+环比的意思是：
+
+```text
+当前周期
+和
+上一个相邻周期
+进行比较
+```
+
+常见环比包括：
+
+| 类型 | 当前值 | 对比值 |
+|---|---|---|
+| 日环比 | 今天 | 昨天 |
+| 周环比 | 本周 | 上周 |
+| 月环比 | 本月 | 上个月 |
+| 年环比 | 今年 | 去年 |
+
+在本题中，数据粒度是“天”，业务要求是：
+
+```text
+当前日期 vs 上个月同一天
+```
+
+例如：
+
+```text
+2026-02-15 vs 2026-01-15
+2026-03-15 vs 2026-02-15
+2026-04-05 vs 2026-03-05
+```
+
+所以本题可以理解为：
+
+```text
+日级数据上的月环比
+```
+
+---
+
+### 2. 同比
+
+同比的意思是：
+
+```text
+当前周期
+和
+去年同期
+进行比较
+```
+
+常见同比包括：
+
+| 类型 | 当前值 | 对比值 |
+|---|---|---|
+| 日同比 | 今天 | 去年同一天 |
+| 月同比 | 本月 | 去年同月 |
+| 季度同比 | 本季度 | 去年同季度 |
+| 年同比 | 今年 | 去年 |
+
+例如：
+
+```text
+2026-07-01 vs 2025-07-01
+2026-08 vs 2025-08
+2026 Q2 vs 2025 Q2
+```
+
+同比常用于排除季节性影响。
+
+例如机场、气象、销售、旅游、客流量等数据，往往存在明显季节周期，因此只看“上个月”不一定公平，还要看“去年同期”。
+
+---
+
+### 3. 自然月
+
+自然月指日历上的真实月份。
+
+例如：
+
+```text
+2026-01-01 到 2026-01-31
+2026-02-01 到 2026-02-28
+2026-03-01 到 2026-03-31
+```
+
+自然月不是固定 30 天。
+
+所以：
+
+```text
+上个月
+≠
+30 天前
+```
+
+例如：
+
+```text
+2026-03-01 的上个月同日是 2026-02-01
+```
+
+但如果用 30 天前：
+
+```text
+2026-03-01 - 30 天 = 2026-01-30
+```
+
+这显然不是上个月同日。
+
+因此做月环比时，不应该使用固定天数：
+
+```python
+pd.Timedelta(days=30)
+```
+
+而应该使用自然月偏移：
+
+```python
+pd.DateOffset(months=1)
+```
+
+---
+
+### 4. 自然年
+
+自然年指日历上的真实年份。
+
+例如：
+
+```text
+2026-01-01 到 2026-12-31
+```
+
+自然年也不是简单固定 365 天，因为存在闰年。
+
+所以：
+
+```text
+去年同期
+≠
+365 天前
+```
+
+做同比时，不建议使用：
+
+```python
+pd.Timedelta(days=365)
+```
+
+而应该使用：
+
+```python
+pd.DateOffset(years=1)
+```
+
+---
+
+## 三、为什么不能用 Timedelta(days=30)
+
+`Timedelta` 适合固定长度的时间差。
+
+例如：
+
+| 业务问题 | Pandas 写法 |
+|---|---|
+| 前一天 | `pd.Timedelta(days=1)` |
+| 7 天前 | `pd.Timedelta(days=7)` |
+| 30 分钟前 | `pd.Timedelta(minutes=30)` |
+| 10 秒前 | `pd.Timedelta(seconds=10)` |
+
+但“上个月”不是固定 30 天。
+
+因为每个月天数不同：
+
+| 月份 | 天数 |
+|---|---:|
+| 1 月 | 31 |
+| 2 月 | 28 或 29 |
+| 3 月 | 31 |
+| 4 月 | 30 |
+| 5 月 | 31 |
+
+因此，月环比应该使用：
+
+```python
+pd.DateOffset(months=1)
+```
+
+年同比应该使用：
+
+```python
+pd.DateOffset(years=1)
+```
+
+---
+
+## 四、Pandas 重要语法：DateOffset
+
+### 1. 正确写法：months=1
+
+```python
+pd.DateOffset(months=1)
+```
+
+含义是：
+
+```text
+在原日期基础上增加 1 个自然月
+```
+
+例如：
+
+```text
+2026-01-15 + DateOffset(months=1) = 2026-02-15
+2026-02-15 + DateOffset(months=1) = 2026-03-15
+2026-03-05 + DateOffset(months=1) = 2026-04-05
+```
+
+---
+
+### 2. 错误写法：month=1
+
+```python
+pd.DateOffset(month=1)
+```
+
+这不是“加 1 个月”。
+
+它的含义是：
+
+```text
+把月份设置为 1 月
+```
+
+例如：
+
+```text
+2026-01-15 + DateOffset(month=1) = 2026-01-15
+2026-02-15 + DateOffset(month=1) = 2026-01-15
+2026-03-15 + DateOffset(month=1) = 2026-01-15
+```
+
+所以：
+
+```text
+months=1 是相对偏移
+month=1 是指定月份
+```
+
+这是本题的重要易错点。
+
+---
+
+### 3. years=1 和 year=2026 的区别
+
+同理：
+
+```python
+pd.DateOffset(years=1)
+```
+
+含义是：
+
+```text
+在原日期基础上增加 1 年
+```
+
+例如：
+
+```text
+2025-07-01 + DateOffset(years=1) = 2026-07-01
+```
+
+而：
+
+```python
+pd.DateOffset(year=2026)
+```
+
+含义是：
+
+```text
+把年份设置为 2026
+```
+
+例如：
+
+```text
+2024-07-01 + DateOffset(year=2026) = 2026-07-01
+2025-07-01 + DateOffset(year=2026) = 2026-07-01
+```
+
+记忆：
+
+```text
+months / years 是加减偏移
+month / year 是指定日期部件
+```
+
+---
+
+## 五、核心解法思想
+
+这道题和“前一天比较”的整体方法一样，都是：
+
+```text
+复制一张原表
+↓
+把复制表中的日期向后平移一个周期
+↓
+把指标字段改名为历史指标
+↓
+用 device_id + stat_date 合并回原表
+↓
+计算当前值 - 历史值
+```
+
+本题的区别在于：
+
+```text
+前一天比较：日期 + 1 天
+上个月同日比较：日期 + 1 个自然月
+去年同期比较：日期 + 1 个自然年
+```
+
+本题要把“上个月的数据”移动到“本月的位置”。
+
+例如原始数据：
+
+| device_id | stat_date | alarm_count |
+|---|---|---:|
+| A | 2026-01-15 | 10 |
+
+把日期加 1 个自然月后：
+
+| device_id | stat_date | alarm_count_previous_month |
+|---|---|---:|
+| A | 2026-02-15 | 10 |
+
+这样它就可以和当前表中的这一行对齐：
+
+| device_id | stat_date | alarm_count |
+|---|---|---:|
+| A | 2026-02-15 | 14 |
+
+合并后：
+
+| device_id | stat_date | alarm_count | alarm_count_previous_month |
+|---|---|---:|---:|
+| A | 2026-02-15 | 14 | 10 |
+
+最后计算：
+
+```text
+alarm_count_diff_month = 14 - 10 = 4
+```
+
+---
+
+## 六、Pandas 解法
+
+```python
+prev_month_df = (
+    df
+    .assign(
+        stat_date=lambda x: (
+            x['stat_date'] + pd.DateOffset(months=1)
+        )
+    )
+    .rename(
+        columns={
+            'alarm_count': 'alarm_count_previous_month'
+        }
+    )
+)
+
+df_pd = (
+    df
+    .merge(
+        prev_month_df[
+            ['device_id', 'stat_date', 'alarm_count_previous_month']
+        ],
+        on=['device_id', 'stat_date'],
+        how='left'
+    )
+    .assign(
+        alarm_count_diff_month=lambda x: (
+            x['alarm_count'] - x['alarm_count_previous_month']
+        )
+    )
+    .sort_values(by=['device_id', 'stat_date'])
+    .reset_index(drop=True)
+)
+
+df_pd
+```
+
+---
+
+## 七、Pandas 逻辑拆解
+
+### 第一步：构造上个月数据表
+
+```python
+prev_month_df = (
+    df
+    .assign(
+        stat_date=lambda x: (
+            x['stat_date'] + pd.DateOffset(months=1)
+        )
+    )
+    .rename(
+        columns={
+            'alarm_count': 'alarm_count_previous_month'
+        }
+    )
+)
+```
+
+这一步的含义是：
+
+```text
+把原始表中的每一条记录向后移动一个自然月。
+```
+
+原始记录：
+
+```text
+A | 2026-01-15 | 10
+```
+
+移动后：
+
+```text
+A | 2026-02-15 | alarm_count_previous_month = 10
+```
+
+---
+
+### 第二步：合并回当前表
+
+```python
+df.merge(
+    prev_month_df[
+        ['device_id', 'stat_date', 'alarm_count_previous_month']
+    ],
+    on=['device_id', 'stat_date'],
+    how='left'
+)
+```
+
+匹配键是：
+
+```text
+device_id + stat_date
+```
+
+不能只按 `stat_date` 合并，否则不同设备之间会错误匹配。
+
+使用 `how='left'` 是为了：
+
+```text
+保留当前表中的所有记录。
+如果找不到上个月同日记录，就保留 NaN。
+```
+
+---
+
+### 第三步：计算差值
+
+```python
+alarm_count_diff_month=lambda x: (
+    x['alarm_count'] - x['alarm_count_previous_month']
+)
+```
+
+如果 `alarm_count_previous_month` 是 `NaN`，那么差值也是 `NaN`。
+
+这代表：
+
+```text
+上个月同日没有数据，无法计算月环比差值。
+```
+
+---
+
+## 八、SQL 解法
+
+### 1. DuckDB 写法
+
+```sql
+WITH previous_month_table AS (
+    SELECT
+        device_id,
+        stat_date + INTERVAL 1 MONTH AS stat_date,
+        alarm_count AS alarm_count_previous_month
+    FROM df
+)
+
+SELECT
+    cur.device_id,
+    cur.stat_date,
+    cur.alarm_count,
+    prev.alarm_count_previous_month,
+    cur.alarm_count - prev.alarm_count_previous_month AS alarm_count_diff_month
+FROM df AS cur
+LEFT JOIN previous_month_table AS prev
+    ON cur.device_id = prev.device_id
+   AND cur.stat_date = prev.stat_date
+ORDER BY cur.device_id, cur.stat_date;
+```
+
+---
+
+### 2. PostgreSQL 写法
+
+PostgreSQL 常见写法：
+
+```sql
+WITH previous_month_table AS (
+    SELECT
+        device_id,
+        stat_date + INTERVAL '1 month' AS stat_date,
+        alarm_count AS alarm_count_previous_month
+    FROM df
+)
+
+SELECT
+    cur.device_id,
+    cur.stat_date,
+    cur.alarm_count,
+    prev.alarm_count_previous_month,
+    cur.alarm_count - prev.alarm_count_previous_month AS alarm_count_diff_month
+FROM df AS cur
+LEFT JOIN previous_month_table AS prev
+    ON cur.device_id = prev.device_id
+   AND cur.stat_date = prev.stat_date
+ORDER BY cur.device_id, cur.stat_date;
+```
+
+---
+
+### 3. SQLite 写法
+
+SQLite 通常使用：
+
+```sql
+date(stat_date, '+1 month')
+```
+
+完整写法：
+
+```sql
+WITH previous_month_table AS (
+    SELECT
+        device_id,
+        date(stat_date, '+1 month') AS stat_date,
+        alarm_count AS alarm_count_previous_month
+    FROM df
+)
+
+SELECT
+    cur.device_id,
+    cur.stat_date,
+    cur.alarm_count,
+    prev.alarm_count_previous_month,
+    cur.alarm_count - prev.alarm_count_previous_month AS alarm_count_diff_month
+FROM df AS cur
+LEFT JOIN previous_month_table AS prev
+    ON cur.device_id = prev.device_id
+   AND date(cur.stat_date) = prev.stat_date
+ORDER BY cur.device_id, cur.stat_date;
+```
+
+---
+
+### 4. MySQL 写法
+
+MySQL 常见写法：
+
+```sql
+DATE_ADD(stat_date, INTERVAL 1 MONTH)
+```
+
+完整写法：
+
+```sql
+WITH previous_month_table AS (
+    SELECT
+        device_id,
+        DATE_ADD(stat_date, INTERVAL 1 MONTH) AS stat_date,
+        alarm_count AS alarm_count_previous_month
+    FROM df
+)
+
+SELECT
+    cur.device_id,
+    cur.stat_date,
+    cur.alarm_count,
+    prev.alarm_count_previous_month,
+    cur.alarm_count - prev.alarm_count_previous_month AS alarm_count_diff_month
+FROM df AS cur
+LEFT JOIN previous_month_table AS prev
+    ON cur.device_id = prev.device_id
+   AND cur.stat_date = prev.stat_date
+ORDER BY cur.device_id, cur.stat_date;
+```
+
+---
+
+## 九、不同时间偏移语法总结
+
+### Pandas
+
+| 业务含义 | 推荐写法 |
+|---|---|
+| 前一天 | `pd.Timedelta(days=1)` |
+| 7 天前 | `pd.Timedelta(days=7)` |
+| 30 分钟前 | `pd.Timedelta(minutes=30)` |
+| 上个月同日 | `pd.DateOffset(months=1)` |
+| 去年同日 | `pd.DateOffset(years=1)` |
+| 下一个自然月 | `pd.DateOffset(months=1)` |
+| 下一个自然年 | `pd.DateOffset(years=1)` |
+
+---
+
+### SQL
+
+| 数据库 | 加 1 天 | 加 1 个月 | 加 1 年 |
+|---|---|---|---|
+| DuckDB | `+ INTERVAL 1 DAY` | `+ INTERVAL 1 MONTH` | `+ INTERVAL 1 YEAR` |
+| PostgreSQL | `+ INTERVAL '1 day'` | `+ INTERVAL '1 month'` | `+ INTERVAL '1 year'` |
+| SQLite | `date(col, '+1 day')` | `date(col, '+1 month')` | `date(col, '+1 year')` |
+| MySQL | `DATE_ADD(col, INTERVAL 1 DAY)` | `DATE_ADD(col, INTERVAL 1 MONTH)` | `DATE_ADD(col, INTERVAL 1 YEAR)` |
+
+---
+
+## 十、常见错误
+
+### 错误一：把上个月理解为 30 天前
+
+错误写法：
+
+```python
+df['stat_date'] + pd.Timedelta(days=30)
+```
+
+问题：
+
+```text
+自然月不是固定 30 天。
+```
+
+正确写法：
+
+```python
+df['stat_date'] + pd.DateOffset(months=1)
+```
+
+---
+
+### 错误二：写成 DateOffset(month=1)
+
+错误写法：
+
+```python
+pd.DateOffset(month=1)
+```
+
+问题：
+
+```text
+month=1 表示把月份设置为 1 月，不是加 1 个月。
+```
+
+正确写法：
+
+```python
+pd.DateOffset(months=1)
+```
+
+记忆：
+
+```text
+months=1：加 1 个月
+month=1：设置为 1 月
+```
+
+---
+
+### 错误三：用 LAG / shift 代替上个月同日
+
+错误 SQL：
+
+```sql
+LAG(alarm_count) OVER(
+    PARTITION BY device_id
+    ORDER BY stat_date
+)
+```
+
+错误 Pandas：
+
+```python
+df.groupby('device_id')['alarm_count'].shift(1)
+```
+
+问题：
+
+```text
+LAG / shift 取的是上一条记录。
+上个月同日是指定日期条件。
+```
+
+只要中间缺少月份或日期，上一条记录就不等于上个月同日。
+
+---
+
+### 错误四：INNER JOIN 导致数据丢失
+
+不推荐：
+
+```sql
+INNER JOIN previous_month_table
+```
+
+或者：
+
+```python
+merge(..., how='inner')
+```
+
+问题：
+
+```text
+如果当前日期找不到上个月同日记录，这一行会被直接删除。
+```
+
+本题要求保留所有当前记录，因此应该使用：
+
+```text
+LEFT JOIN / how='left'
+```
+
+---
+
+### 错误五：把缺失的上月数据填成 0
+
+不推荐：
+
+```python
+df_pd['alarm_count_previous_month'].fillna(0)
+```
+
+原因：
+
+```text
+上个月同日没有数据 ≠ 上个月同日报警次数为 0
+```
+
+两者业务含义不同：
+
+| 情况 | 含义 |
+|---|---|
+| NaN / NULL | 不知道上个月同日是多少 |
+| 0 | 明确知道上个月同日报警次数为 0 |
+
+本题应该保留 `NaN / NULL`。
+
+---
+
+## 十一、月底日期的特殊情况
+
+自然月比较有一个特殊问题：
+
+```text
+并不是每个月都有 29、30、31 号。
+```
+
+例如：
+
+```text
+2026-01-31 的下个月同日
+```
+
+理论上应该是：
+
+```text
+2026-02-31
+```
+
+但这个日期不存在。
+
+不同工具和数据库可能会对月底日期做不同处理，例如调整到月底，或者按内部规则转换。
+
+因此在真实业务中，遇到月底日期时必须先明确业务规则：
+
+```text
+如果上个月同日不存在，是否匹配到上个月最后一天？
+还是直接认为没有可比日期？
+```
+
+常见业务规则有两种：
+
+| 规则 | 含义 |
+|---|---|
+| 严格同日 | 只匹配同一天号，不存在就算缺失 |
+| 月末对月末 | 如果当前是月末，则匹配上个月月末 |
+
+本题暂时采用简单规则：
+
+```text
+只处理普通日期，不专门处理月底特殊情况。
+```
+
+后续如果做真实月度分析，需要单独处理月底逻辑。
+
+---
+
+## 十二、方法选择规则
+
+### 1. 顺序相邻问题
+
+如果业务说：
+
+```text
+上一条记录
+上一笔订单
+上一次状态
+前一行
+```
+
+优先使用：
+
+| 工具 | 方法 |
+|---|---|
+| SQL | `LAG()` |
+| Pandas | `groupby().shift(1)` |
+
+---
+
+### 2. 固定时间差问题
+
+如果业务说：
+
+```text
+前一天
+7 天前
+30 分钟前
+10 秒前
+```
+
+优先使用：
+
+| 工具 | 方法 |
+|---|---|
+| SQL | 日期偏移 + JOIN |
+| Pandas | `pd.Timedelta()` + merge |
+
+---
+
+### 3. 自然周期问题
+
+如果业务说：
+
+```text
+上个月
+去年同期
+自然月
+自然年
+月环比
+同比
+```
+
+优先使用：
+
+| 工具 | 方法 |
+|---|---|
+| SQL | `INTERVAL 1 MONTH / INTERVAL 1 YEAR` |
+| Pandas | `pd.DateOffset(months=1 / years=1)` + merge |
+
+---
+
+## 十三、核心记忆点
+
+```text
+上一条记录，是顺序关系。
+前一天 / 上个月 / 去年同期，是时间条件关系。
+```
+
+```text
+顺序相邻，用 LAG / shift。
+指定时间点，用 JOIN / merge。
+```
+
+```text
+固定天数，用 Timedelta。
+自然月 / 自然年，用 DateOffset。
+```
+
+```text
+months=1 是加一个月。
+month=1 是设置为 1 月。
+```
+
+```text
+years=1 是加一年。
+year=2026 是设置为 2026 年。
+```
+
+```text
+上个月不等于 30 天前。
+去年同期不等于 365 天前。
+```
+
+---
+
+## 十四、和真实工作的关系
+
+真实业务中，环比和同比非常常见。
+
+例如：
+
+```text
+本日报警次数 vs 昨日报警次数
+本周故障次数 vs 上周故障次数
+本月销售额 vs 上月销售额
+本月客流量 vs 去年同月客流量
+当前能见度指标 vs 10 分钟前能见度指标
+```
+
+但这些问题不能只看语法，必须先判断业务定义：
+
+```text
+到底是上一条记录？
+还是前一天？
+还是上个月？
+还是去年同期？
+```
+
+如果业务定义判断错了，即使代码能运行，结果也是错的。
+
+本题的价值在于：
+
+```text
+从“会写 shift / LAG”
+升级为
+“能根据业务时间定义选择正确方法”
+```
