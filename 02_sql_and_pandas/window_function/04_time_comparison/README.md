@@ -2265,3 +2265,306 @@ year=2026 是设置为 2026 年。
 升级为
 “能根据业务时间定义选择正确方法”
 ```
+
+## Pandas 重点：为什么这里要用 where，而不是 loc
+
+在增长率计算中，需要处理两种不能计算增长率的情况：
+
+```text
+previous_month_alarm_count 是 NaN
+previous_month_alarm_count 等于 0
+```
+
+这两种情况下：
+
+```text
+growth_rate = NaN
+growth_rate_pct = NaN
+```
+
+但是注意：
+
+```text
+不能删除这些行。
+```
+
+因为这些行本身仍然是有效的当前日期记录，只是没有可用的历史基准值。
+
+---
+
+### 一、错误写法：使用 loc 筛选
+
+不推荐写法：
+
+```python
+.loc[
+    lambda x: (
+        x['previous_month_alarm_count'].notna()
+        & (x['previous_month_alarm_count'] != 0)
+    )
+]
+```
+
+这句的含义是：
+
+```text
+只保留 previous_month_alarm_count 不是空，并且不等于 0 的行。
+```
+
+结果会导致：
+
+```text
+没有上个月数据的行被删除；
+上个月值为 0 的行被删除。
+```
+
+但本题要求保留所有当前记录，因此不能用 `.loc[]` 来处理这个逻辑。
+
+记忆：
+
+```text
+loc 是筛行。
+不符合条件的行会被删除。
+```
+
+---
+
+### 二、正确写法：使用 where 控制字段结果
+
+推荐写法：
+
+```python
+growth_rate=lambda x: (
+    (x['alarm_count_diff'] / x['previous_month_alarm_count'])
+    .where(
+        x['previous_month_alarm_count'].notna()
+        & (x['previous_month_alarm_count'] != 0)
+    )
+)
+```
+
+这句的意思是：
+
+```text
+先计算 alarm_count_diff / previous_month_alarm_count
+然后只在条件满足的地方保留结果；
+条件不满足的地方自动变成 NaN。
+```
+
+也就是说：
+
+```text
+previous_month_alarm_count 不是空，并且不等于 0
+→ 保留增长率
+
+previous_month_alarm_count 是空，或者等于 0
+→ growth_rate 变成 NaN
+```
+
+关键区别是：
+
+```text
+where 不删除行。
+where 只是控制这个字段里的值。
+```
+
+---
+
+### 三、完整 Pandas 模板
+
+```python
+df_prev_month = (
+    df
+    .assign(
+        stat_date=lambda x: (
+            x['stat_date'] + pd.DateOffset(months=1)
+        )
+    )
+    .rename(
+        columns={
+            'alarm_count': 'previous_month_alarm_count'
+        }
+    )
+)
+
+df_pd = (
+    df
+    .merge(
+        df_prev_month[
+            ['device_id', 'stat_date', 'previous_month_alarm_count']
+        ],
+        on=['device_id', 'stat_date'],
+        how='left'
+    )
+    .assign(
+        alarm_count_diff=lambda x: (
+            x['alarm_count'] - x['previous_month_alarm_count']
+        ),
+        growth_rate=lambda x: (
+            (x['alarm_count_diff'] / x['previous_month_alarm_count'])
+            .where(
+                x['previous_month_alarm_count'].notna()
+                & (x['previous_month_alarm_count'] != 0)
+            )
+        ),
+        growth_rate_pct=lambda x: (
+            (x['alarm_count_diff'] * 100 / x['previous_month_alarm_count'])
+            .where(
+                x['previous_month_alarm_count'].notna()
+                & (x['previous_month_alarm_count'] != 0)
+            )
+        )
+    )
+    .sort_values(by=['device_id', 'stat_date'])
+    .reset_index(drop=True)
+)
+
+df_pd
+```
+
+---
+
+### 四、where 的基本理解
+
+```python
+series.where(condition)
+```
+
+可以理解成：
+
+```text
+条件为 True：
+保留原来的值。
+
+条件为 False：
+变成 NaN。
+```
+
+例如：
+
+```python
+s.where(s > 0)
+```
+
+含义是：
+
+```text
+只保留大于 0 的值；
+小于等于 0 的位置变成 NaN；
+但行不会被删除。
+```
+
+如果想把不满足条件的位置改成指定值，也可以写：
+
+```python
+s.where(s > 0, other=0)
+```
+
+含义是：
+
+```text
+大于 0 的地方保留原值；
+不大于 0 的地方改成 0。
+```
+
+但本题不建议填 0，因为：
+
+```text
+不能计算增长率
+不等于
+增长率为 0
+```
+
+所以这里让它保持 `NaN` 更符合业务含义。
+
+---
+
+### 五、loc 和 where 的区别
+
+| 方法 | 作用 | 是否删除行 | 适用场景 |
+|---|---|---:|---|
+| `.loc[condition]` | 筛选行 | 会删除行 | 只想保留满足条件的记录 |
+| `.where(condition)` | 控制字段值 | 不删除行 | 保留全部记录，但让部分结果变成 NaN |
+
+本题应该使用：
+
+```text
+where
+```
+
+因为业务要求是：
+
+```text
+保留所有日期记录；
+只是不计算无效增长率。
+```
+
+---
+
+### 六、和 SQL CASE WHEN 的对应关系
+
+Pandas 的 `.where()` 在这里相当于 SQL 中的：
+
+```sql
+CASE
+    WHEN previous_month_alarm_count IS NULL
+      OR previous_month_alarm_count = 0
+    THEN NULL
+    ELSE alarm_count_diff * 1.0 / previous_month_alarm_count
+END AS growth_rate
+```
+
+对应关系：
+
+| SQL | Pandas |
+|---|---|
+| `CASE WHEN ... THEN NULL ELSE ... END` | `.where(condition)` |
+| 条件不满足返回 `NULL` | 条件不满足返回 `NaN` |
+| 不删除行 | 不删除行 |
+
+Pandas 写法：
+
+```python
+(
+    x['alarm_count_diff'] / x['previous_month_alarm_count']
+).where(
+    x['previous_month_alarm_count'].notna()
+    & (x['previous_month_alarm_count'] != 0)
+)
+```
+
+这里的 condition 是“可以正常计算增长率”的条件：
+
+```text
+previous_month_alarm_count 不是空
+并且
+previous_month_alarm_count 不等于 0
+```
+
+---
+
+### 七、核心记忆点
+
+```text
+要删除行，用 loc。
+要保留行但控制结果是否有效，用 where。
+```
+
+```text
+增长率不能计算时，应该让 growth_rate 为 NaN，
+而不是把整行删除。
+```
+
+```text
+previous_month_alarm_count = NaN：
+没有比较基准。
+
+previous_month_alarm_count = 0：
+有基准值，但不能作为除数。
+```
+
+```text
+无法计算增长率
+不等于
+增长率为 0。
+```
