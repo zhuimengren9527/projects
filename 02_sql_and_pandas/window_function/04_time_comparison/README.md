@@ -577,3 +577,698 @@ previous_status.notna()
 当前状态是否不同于上一条
 前后状态是否一致
 ```
+
+# 03_day_over_day_with_missing_dates
+
+## 题型名称
+
+Day Over Day Change With Missing Dates
+
+中文理解：
+
+> 存在缺失日期的日环比比较
+
+---
+
+## 一、题目目标
+
+给定一张设备每日报警统计表：
+
+| 字段名 | 含义 |
+|---|---|
+| device_id | 设备 ID |
+| stat_date | 统计日期 |
+| alarm_count | 当天报警次数 |
+
+现在需要计算：
+
+> 每个设备当天报警次数相比前一天变化了多少。
+
+最终输出字段：
+
+| 字段名 | 含义 |
+|---|---|
+| device_id | 设备 ID |
+| stat_date | 当前日期 |
+| alarm_count | 当前日期报警次数 |
+| previous_day_alarm_count | 前一天报警次数 |
+| alarm_count_diff | 当前报警次数 - 前一天报警次数 |
+
+---
+
+## 二、核心业务难点
+
+这道题的关键不是计算差值，而是判断：
+
+```text
+前一天
+```
+
+不能简单理解成：
+
+```text
+上一条记录
+```
+
+如果数据每天都有记录，那么：
+
+```text
+上一条记录 = 前一天记录
+```
+
+但如果中间缺日期，那么：
+
+```text
+上一条记录 ≠ 前一天记录
+```
+
+例如：
+
+| device_id | stat_date | alarm_count |
+|---|---|---:|
+| A | 2026-07-01 | 10 |
+| A | 2026-07-02 | 12 |
+| A | 2026-07-04 | 15 |
+
+对于 `2026-07-04` 来说：
+
+```text
+上一条记录是：2026-07-02
+前一天应该是：2026-07-03
+```
+
+但是 `2026-07-03` 没有数据。
+
+所以 `2026-07-04` 这一行的结果应该是：
+
+```text
+previous_day_alarm_count = NULL / NaN
+alarm_count_diff = NULL / NaN
+```
+
+而不是：
+
+```text
+15 - 12 = 3
+```
+
+---
+
+## 三、为什么不能直接使用 LAG / shift
+
+如果直接使用 SQL 的 `LAG()`：
+
+```sql
+LAG(alarm_count) OVER(
+    PARTITION BY device_id
+    ORDER BY stat_date
+)
+```
+
+或者 Pandas 的 `shift(1)`：
+
+```python
+df.groupby('device_id')['alarm_count'].shift(1)
+```
+
+它们取到的是：
+
+```text
+上一条记录
+```
+
+而不是：
+
+```text
+前一天记录
+```
+
+所以在日期不连续的情况下，`LAG()` / `shift(1)` 会产生业务错误。
+
+记忆：
+
+```text
+上一条 / 上一次 / 前一笔：
+用 LAG / shift
+
+前一天 / 上个月 / 去年同期 / 指定时间差：
+优先考虑日期偏移 + join / merge
+```
+
+一句话总结：
+
+```text
+顺序相邻，用 shift。
+时间指定，用 join。
+```
+
+---
+
+## 四、核心解法思想
+
+这道题的正确思路是：
+
+```text
+复制一张原表
+↓
+把复制表的日期整体往后推 1 天
+↓
+把 alarm_count 改名为 previous_day_alarm_count
+↓
+用 device_id + stat_date 合并回原表
+↓
+计算当前值 - 前一天值
+```
+
+为什么要把日期往后推 1 天？
+
+因为我们要把“昨天的数据”移动到“今天的位置”。
+
+例如原始数据：
+
+| device_id | stat_date | alarm_count |
+|---|---|---:|
+| A | 2026-07-01 | 10 |
+
+把日期加 1 天以后变成：
+
+| device_id | stat_date | previous_day_alarm_count |
+|---|---|---:|
+| A | 2026-07-02 | 10 |
+
+这样它就可以和当前表里的这一行对齐：
+
+| device_id | stat_date | alarm_count |
+|---|---|---:|
+| A | 2026-07-02 | 12 |
+
+合并后得到：
+
+| device_id | stat_date | alarm_count | previous_day_alarm_count |
+|---|---|---:|---:|
+| A | 2026-07-02 | 12 | 10 |
+
+然后计算：
+
+```text
+alarm_count_diff = 12 - 10 = 2
+```
+
+---
+
+## 五、SQL 解法
+
+### 版本一：DuckDB / PostgreSQL 风格
+
+如果 SQL 环境支持 `INTERVAL 1 DAY`，可以使用下面写法。
+
+```sql
+WITH previous_day_table AS (
+    SELECT
+        device_id,
+        stat_date + INTERVAL 1 DAY AS stat_date,
+        alarm_count AS previous_day_alarm_count
+    FROM df
+)
+
+SELECT
+    cur.device_id,
+    cur.stat_date,
+    cur.alarm_count,
+    prev.previous_day_alarm_count,
+    cur.alarm_count - prev.previous_day_alarm_count AS alarm_count_diff
+FROM df AS cur
+LEFT JOIN previous_day_table AS prev
+    ON cur.device_id = prev.device_id
+   AND cur.stat_date = prev.stat_date
+ORDER BY cur.device_id, cur.stat_date;
+```
+
+### SQL 逻辑拆解
+
+第一步，构造前一天数据表：
+
+```sql
+WITH previous_day_table AS (
+    SELECT
+        device_id,
+        stat_date + INTERVAL 1 DAY AS stat_date,
+        alarm_count AS previous_day_alarm_count
+    FROM df
+)
+```
+
+这一步的含义是：
+
+```text
+把原表中的日期整体往后推一天。
+```
+
+例如：
+
+```text
+A | 2026-07-01 | 10
+```
+
+变成：
+
+```text
+A | 2026-07-02 | previous_day_alarm_count = 10
+```
+
+第二步，当前表和前一天表做 `LEFT JOIN`：
+
+```sql
+FROM df AS cur
+LEFT JOIN previous_day_table AS prev
+    ON cur.device_id = prev.device_id
+   AND cur.stat_date = prev.stat_date
+```
+
+这里使用 `LEFT JOIN` 的原因是：
+
+```text
+保留当前表的所有日期记录。
+如果前一天没有数据，previous_day_alarm_count 保持 NULL。
+```
+
+第三步，计算差值：
+
+```sql
+cur.alarm_count - prev.previous_day_alarm_count AS alarm_count_diff
+```
+
+如果 `previous_day_alarm_count` 是 `NULL`，那么差值自然也是 `NULL`。
+
+这正好符合业务含义：
+
+```text
+前一天没有数据，就无法计算日环比差值。
+```
+
+---
+
+## 六、SQLite 写法
+
+如果使用 SQLite，通常不能直接写：
+
+```sql
+stat_date + INTERVAL 1 DAY
+```
+
+可以使用：
+
+```sql
+date(stat_date, '+1 day')
+```
+
+SQLite 版本：
+
+```sql
+WITH previous_day_table AS (
+    SELECT
+        device_id,
+        date(stat_date, '+1 day') AS stat_date,
+        alarm_count AS previous_day_alarm_count
+    FROM df
+)
+
+SELECT
+    cur.device_id,
+    cur.stat_date,
+    cur.alarm_count,
+    prev.previous_day_alarm_count,
+    cur.alarm_count - prev.previous_day_alarm_count AS alarm_count_diff
+FROM df AS cur
+LEFT JOIN previous_day_table AS prev
+    ON cur.device_id = prev.device_id
+   AND date(cur.stat_date) = prev.stat_date
+ORDER BY cur.device_id, cur.stat_date;
+```
+
+注意：
+
+```text
+不同 SQL 引擎的日期加减语法不同。
+但是核心思想不变：
+复制一张表，把日期平移一天，再 join 回来。
+```
+
+---
+
+## 七、Pandas 解法
+
+```python
+prev_df = (
+    df
+    .assign(
+        stat_date=lambda x: x['stat_date'] + pd.Timedelta(days=1)
+    )
+    .rename(
+        columns={
+            'alarm_count': 'previous_day_alarm_count'
+        }
+    )
+)
+
+df_pd = (
+    df
+    .merge(
+        prev_df[['device_id', 'stat_date', 'previous_day_alarm_count']],
+        on=['device_id', 'stat_date'],
+        how='left'
+    )
+    .assign(
+        alarm_count_diff=lambda x: (
+            x['alarm_count'] - x['previous_day_alarm_count']
+        )
+    )
+    .sort_values(by=['device_id', 'stat_date'])
+    .reset_index(drop=True)
+)
+
+df_pd
+```
+
+### Pandas 逻辑拆解
+
+第一步，构造前一天数据表：
+
+```python
+prev_df = (
+    df
+    .assign(
+        stat_date=lambda x: x['stat_date'] + pd.Timedelta(days=1)
+    )
+    .rename(
+        columns={
+            'alarm_count': 'previous_day_alarm_count'
+        }
+    )
+)
+```
+
+这一步做了两件事：
+
+```text
+1. 把 stat_date 整体加 1 天
+2. 把 alarm_count 改名为 previous_day_alarm_count
+```
+
+原始数据：
+
+```text
+A | 2026-07-01 | 10
+```
+
+变成：
+
+```text
+A | 2026-07-02 | previous_day_alarm_count = 10
+```
+
+第二步，合并回原表：
+
+```python
+df.merge(
+    prev_df[['device_id', 'stat_date', 'previous_day_alarm_count']],
+    on=['device_id', 'stat_date'],
+    how='left'
+)
+```
+
+含义是：
+
+```text
+用当前表的 device_id + stat_date
+去匹配已经平移后的 prev_df
+```
+
+如果能匹配上，说明前一天有数据。
+
+如果匹配不上，说明前一天缺数据。
+
+第三步，计算差值：
+
+```python
+alarm_count_diff=lambda x: (
+    x['alarm_count'] - x['previous_day_alarm_count']
+)
+```
+
+如果 `previous_day_alarm_count` 是 `NaN`，那么 `alarm_count_diff` 也是 `NaN`。
+
+---
+
+## 八、结果示例
+
+原始数据：
+
+| device_id | stat_date | alarm_count |
+|---|---|---:|
+| A | 2026-07-01 | 10 |
+| A | 2026-07-02 | 12 |
+| A | 2026-07-04 | 15 |
+| A | 2026-07-05 | 9 |
+| B | 2026-07-01 | 5 |
+| B | 2026-07-02 | 8 |
+| B | 2026-07-03 | 8 |
+| B | 2026-07-04 | 6 |
+| C | 2026-07-01 | 20 |
+| C | 2026-07-03 | 25 |
+| C | 2026-07-04 | 22 |
+
+预期结果：
+
+| device_id | stat_date | alarm_count | previous_day_alarm_count | alarm_count_diff |
+|---|---|---:|---:|---:|
+| A | 2026-07-01 | 10 | NULL | NULL |
+| A | 2026-07-02 | 12 | 10 | 2 |
+| A | 2026-07-04 | 15 | NULL | NULL |
+| A | 2026-07-05 | 9 | 15 | -6 |
+| B | 2026-07-01 | 5 | NULL | NULL |
+| B | 2026-07-02 | 8 | 5 | 3 |
+| B | 2026-07-03 | 8 | 8 | 0 |
+| B | 2026-07-04 | 6 | 8 | -2 |
+| C | 2026-07-01 | 20 | NULL | NULL |
+| C | 2026-07-03 | 25 | NULL | NULL |
+| C | 2026-07-04 | 22 | 25 | -3 |
+
+---
+
+## 九、常见错误
+
+### 错误一：直接使用 LAG / shift
+
+错误 SQL：
+
+```sql
+LAG(alarm_count) OVER(
+    PARTITION BY device_id
+    ORDER BY stat_date
+) AS previous_alarm_count
+```
+
+错误 Pandas：
+
+```python
+df.groupby('device_id')['alarm_count'].shift(1)
+```
+
+问题：
+
+```text
+它们取的是上一条记录，不一定是前一天记录。
+```
+
+只要日期有缺失，结果就可能错误。
+
+---
+
+### 错误二：用 INNER JOIN
+
+不推荐：
+
+```sql
+INNER JOIN previous_day_table AS prev
+```
+
+或者 Pandas：
+
+```python
+merge(..., how='inner')
+```
+
+问题：
+
+```text
+INNER JOIN 只保留能匹配到前一天数据的记录。
+前一天缺失的当前记录会被直接删掉。
+```
+
+但本题要求保留所有当前日期记录。
+
+所以应该使用：
+
+```text
+LEFT JOIN / how='left'
+```
+
+---
+
+### 错误三：把缺失的前一天报警次数填成 0
+
+不推荐：
+
+```python
+previous_day_alarm_count.fillna(0)
+```
+
+原因：
+
+```text
+前一天没有数据 ≠ 前一天报警次数为 0
+```
+
+这两个业务含义完全不同。
+
+- 没有数据：不知道前一天报警次数是多少。
+- 0：明确知道前一天报警次数是 0。
+
+所以本题中应该保留 `NULL / NaN`。
+
+---
+
+### 错误四：只按日期合并，不按设备合并
+
+错误：
+
+```python
+merge(prev_df, on='stat_date', how='left')
+```
+
+问题：
+
+```text
+不同设备的同一天会互相匹配，导致 A 设备匹配到 B 设备的数据。
+```
+
+正确匹配键必须是：
+
+```text
+device_id + stat_date
+```
+
+对应代码：
+
+```python
+on=['device_id', 'stat_date']
+```
+
+---
+
+## 十、方法选择规则
+
+以后看到类似问题时，先判断业务语义。
+
+### 1. 如果业务问“上一条记录”
+
+例如：
+
+```text
+当前温度比上一条记录变化了多少？
+当前状态是否不同于上一条状态？
+当前订单比上一笔订单金额高多少？
+```
+
+优先使用：
+
+| 工具 | 方法 |
+|---|---|
+| SQL | `LAG()` |
+| Pandas | `groupby().shift(1)` |
+
+---
+
+### 2. 如果业务问“指定时间差”
+
+例如：
+
+```text
+和前一天相比
+和上个月相比
+和去年同期相比
+和 7 天前相比
+和 30 分钟前相比
+```
+
+优先使用：
+
+| 工具 | 方法 |
+|---|---|
+| SQL | 自连接 / 日期偏移 / JOIN |
+| Pandas | 复制表 / 日期偏移 / merge |
+
+---
+
+## 十一、核心记忆点
+
+```text
+上一条记录，是顺序关系。
+前一天记录，是时间条件关系。
+```
+
+```text
+顺序相邻，用 LAG / shift。
+时间指定，用 JOIN / merge。
+```
+
+```text
+如果日期可能缺失，不要把上一条记录当作前一天。
+```
+
+```text
+前一天没有数据，不等于前一天数值为 0。
+```
+
+```text
+做时间比较时，先问清楚：
+业务要的是上一条，还是指定时间点？
+```
+
+---
+
+## 十二、和真实工作的关系
+
+真实业务数据中，时间序列经常不是完美连续的。
+
+常见原因包括：
+
+```text
+设备断采
+系统漏报
+采集延迟
+数据入库失败
+节假日无数据
+某些时间段无业务发生
+```
+
+因此在做“日环比”“周环比”“同比”“前后对比”时，不能无脑使用 `LAG()` 或 `shift()`。
+
+必须先判断：
+
+```text
+上一条记录是否真的代表前一天？
+```
+
+如果不能保证日期连续，就应该使用：
+
+```text
+日期偏移 + join / merge
+```
+
+这道题的价值就在于：
+
+```text
+从语法思维升级到业务语义思维。
+```
