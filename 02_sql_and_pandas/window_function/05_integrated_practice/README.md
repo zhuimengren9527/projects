@@ -441,3 +441,289 @@ groupby().cumsum()
 → 构造业务标记
 → 完成聚合或筛选
 ```
+
+## Task 3：每个设备最近一次 ERROR 记录
+
+### 题目目标
+
+找出每个设备最近一次 `ERROR` 状态记录。
+
+输出字段：
+
+```text
+device_id
+stat_date
+status
+alarm_count
+```
+
+本题需要先筛选出 `status = 'ERROR'` 的记录，然后在每个设备内部按照 `stat_date` 从新到旧排序，取最新日期对应的记录。
+
+---
+
+### Pattern 分类
+
+本题属于：
+
+```text
+Ranking / 分组排名问题
+```
+
+核心逻辑是：
+
+```text
+按设备分组
+↓
+筛选 ERROR 记录
+↓
+按日期降序排名
+↓
+取每个设备排名第 1 的记录
+```
+
+---
+
+### SQL 解法
+
+```sql
+WITH date_rank_table AS (
+    SELECT
+        device_id,
+        stat_date,
+        status,
+        alarm_count,
+        RANK() OVER(
+            PARTITION BY device_id
+            ORDER BY stat_date DESC
+        ) AS date_rank
+    FROM df
+    WHERE status = 'ERROR'
+)
+
+SELECT
+    device_id,
+    stat_date,
+    status,
+    alarm_count
+FROM date_rank_table
+WHERE date_rank = 1
+ORDER BY device_id;
+```
+
+---
+
+### SQL 逻辑说明
+
+```sql
+WHERE status = 'ERROR'
+```
+
+先只保留异常状态记录。
+
+```sql
+RANK() OVER(
+    PARTITION BY device_id
+    ORDER BY stat_date DESC
+)
+```
+
+表示：
+
+```text
+每个设备单独排名；
+日期越新，排名越靠前；
+最新日期的 ERROR 记录排名为 1。
+```
+
+最后：
+
+```sql
+WHERE date_rank = 1
+```
+
+保留每个设备最新的 ERROR 记录。
+
+---
+
+### Pandas 解法
+
+```python
+df_pd = (
+    df
+    .loc[lambda x: x['status'] == 'ERROR']
+    .assign(
+        date_rank=lambda x: (
+            x.groupby('device_id')['stat_date']
+             .rank(method='min', ascending=False)
+             .astype(int)
+        )
+    )
+    .loc[lambda x: x['date_rank'] == 1]
+    [
+        [
+            'device_id',
+            'stat_date',
+            'status',
+            'alarm_count'
+        ]
+    ]
+    .sort_values(by=['device_id', 'stat_date'])
+    .reset_index(drop=True)
+)
+
+df_pd
+```
+
+---
+
+### Pandas 逻辑说明
+
+```python
+.loc[lambda x: x['status'] == 'ERROR']
+```
+
+先筛选出 `ERROR` 记录。
+
+```python
+.groupby('device_id')['stat_date'].rank(
+    method='min',
+    ascending=False
+)
+```
+
+表示：
+
+```text
+每个设备内部按 stat_date 排名；
+日期越新，排名越靠前；
+如果同一个设备最新日期有多条 ERROR，它们会得到相同排名。
+```
+
+```python
+.loc[lambda x: x['date_rank'] == 1]
+```
+
+保留每个设备最新日期的 ERROR 记录。
+
+---
+
+### RANK 和 ROW_NUMBER 的业务区别
+
+本题需要特别注意：
+
+```text
+最近一次 ERROR
+```
+
+可能有两种业务口径。
+
+#### 口径一：每个设备只保留一条最近 ERROR
+
+如果业务要求：
+
+```text
+每个设备最多只输出一条 ERROR 记录
+```
+
+则使用：
+
+| 工具 | 方法 |
+|---|---|
+| SQL | `ROW_NUMBER()` |
+| Pandas | `sort_values()` + `groupby().cumcount() + 1` |
+
+这种写法会强行编号，即使同一天有多条 ERROR，也只保留其中一条。
+
+---
+
+#### 口径二：最新日期的 ERROR 全部保留
+
+如果业务要求：
+
+```text
+如果同一个设备最新日期有多条 ERROR，全部保留
+```
+
+则使用：
+
+| 工具 | 方法 |
+|---|---|
+| SQL | `RANK()` 或 `DENSE_RANK()` |
+| Pandas | `rank(method='min')` 或 `rank(method='dense')` |
+
+本题当前采用第二种口径：
+
+```text
+保留每个设备最新日期的所有 ERROR 记录。
+```
+
+---
+
+### SQL / Pandas 对应关系
+
+| SQL | Pandas | 含义 |
+|---|---|---|
+| `ROW_NUMBER()` | `sort_values()` + `groupby().cumcount() + 1` | 强行编号，不保留并列 |
+| `RANK()` | `rank(method='min')` | 并列同名次，后续跳号 |
+| `DENSE_RANK()` | `rank(method='dense')` | 并列同名次，后续不跳号 |
+
+---
+
+### 常见错误
+
+#### 错误一：用 cumcount 处理并列最新日期
+
+```python
+.groupby('device_id').cumcount() + 1
+```
+
+这个方法对应的是 `ROW_NUMBER()`，会强行编号。
+
+如果同一个设备同一天有两条最新 `ERROR`，只会保留其中一条。
+
+如果业务要求保留并列最新日期的所有记录，应该使用：
+
+```python
+.rank(method='min', ascending=False)
+```
+
+---
+
+#### 错误二：在使用 rank 时多余排序
+
+如果使用：
+
+```python
+rank(method='min', ascending=False)
+```
+
+前面的 `sort_values()` 不是必须的，因为 `rank()` 本身已经根据 `stat_date` 计算排名。
+
+但如果使用：
+
+```python
+groupby().cumcount() + 1
+```
+
+则必须先排序，因为 `cumcount()` 依赖当前 DataFrame 的行顺序。
+
+---
+
+### 核心记忆点
+
+```text
+每组最新一条：
+ROW_NUMBER / cumcount
+
+每组最新日期全部保留：
+RANK / rank(method='min')
+
+并列名次不跳号：
+DENSE_RANK / rank(method='dense')
+```
+
+```text
+先判断业务口径：
+是只要一条？
+还是最新日期并列记录都要？
+```
