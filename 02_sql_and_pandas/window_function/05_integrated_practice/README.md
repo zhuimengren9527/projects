@@ -727,3 +727,341 @@ DENSE_RANK / rank(method='dense')
 是只要一条？
 还是最新日期并列记录都要？
 ```
+
+## Task 4：每个设备报警次数最高的前 2 天
+
+### 题目目标
+
+找出每个设备 `alarm_count` 最高的前 2 天。
+
+输出字段：
+
+```text
+device_id
+stat_date
+status
+alarm_count
+rn
+```
+
+业务要求：
+
+```text
+每个设备最多输出 2 条记录。
+如果 alarm_count 相同，stat_date 较晚的排前面。
+```
+
+---
+
+### Pattern 分类
+
+本题属于：
+
+```text
+Ranking / 分组排序取 Top N
+```
+
+核心逻辑是：
+
+```text
+按设备分组
+↓
+组内按 alarm_count 降序排序
+↓
+如果 alarm_count 相同，按 stat_date 降序排序
+↓
+生成行号 rn
+↓
+筛选 rn <= 2
+```
+
+---
+
+### SQL 解法
+
+```sql
+WITH rank_table AS (
+    SELECT
+        device_id,
+        stat_date,
+        status,
+        alarm_count,
+        ROW_NUMBER() OVER(
+            PARTITION BY device_id
+            ORDER BY alarm_count DESC, stat_date DESC
+        ) AS rn
+    FROM df
+)
+
+SELECT
+    device_id,
+    stat_date,
+    status,
+    alarm_count,
+    rn
+FROM rank_table
+WHERE rn <= 2
+ORDER BY device_id, rn;
+```
+
+---
+
+### SQL 逻辑说明
+
+```sql
+PARTITION BY device_id
+```
+
+表示每个设备单独排名。
+
+```sql
+ORDER BY alarm_count DESC, stat_date DESC
+```
+
+表示：
+
+```text
+报警次数越高，排名越靠前；
+如果报警次数相同，日期越晚，排名越靠前。
+```
+
+```sql
+ROW_NUMBER()
+```
+
+表示强行生成唯一行号。
+
+所以每个设备筛选：
+
+```sql
+WHERE rn <= 2
+```
+
+就能保证：
+
+```text
+每个设备最多输出 2 条记录。
+```
+
+---
+
+### Pandas 解法
+
+```python
+df_pd = (
+    df
+    .sort_values(
+        by=['device_id', 'alarm_count', 'stat_date'],
+        ascending=[True, False, False]
+    )
+    .assign(
+        rn=lambda x: (
+            x.groupby('device_id').cumcount() + 1
+        )
+    )
+    .loc[lambda x: x['rn'] <= 2]
+    [
+        [
+            'device_id',
+            'stat_date',
+            'status',
+            'alarm_count',
+            'rn'
+        ]
+    ]
+    .reset_index(drop=True)
+)
+
+df_pd
+```
+
+---
+
+### Pandas 逻辑说明
+
+```python
+.sort_values(
+    by=['device_id', 'alarm_count', 'stat_date'],
+    ascending=[True, False, False]
+)
+```
+
+先把数据排成目标顺序：
+
+```text
+device_id 升序；
+alarm_count 降序；
+stat_date 降序。
+```
+
+然后：
+
+```python
+x.groupby('device_id').cumcount() + 1
+```
+
+在每个设备内部按当前顺序生成行号。
+
+最后：
+
+```python
+.loc[lambda x: x['rn'] <= 2]
+```
+
+保留每个设备前 2 条记录。
+
+---
+
+### 为什么这里不用 RANK
+
+本题要求：
+
+```text
+每个设备最多输出 2 条。
+```
+
+这说明要取的是：
+
+```text
+Top 2 条记录
+```
+
+而不是：
+
+```text
+Top 2 档报警次数
+```
+
+所以应该使用：
+
+| 业务口径 | SQL | Pandas |
+|---|---|---|
+| 每组最多取 N 条记录 | `ROW_NUMBER()` | `sort_values()` + `groupby().cumcount() + 1` |
+| 每组取前 N 档数值，保留并列 | `RANK()` / `DENSE_RANK()` | `rank(method='min')` / `rank(method='dense')` |
+
+如果使用 `RANK()`，当报警次数并列时，可能会输出超过 2 条记录。
+
+例如某设备报警次数为：
+
+```text
+10
+10
+9
+```
+
+如果取 `RANK <= 2`，结果可能只得到两个 10；如果数据是：
+
+```text
+10
+9
+9
+```
+
+取 `RANK <= 2` 会得到三条记录。
+
+但本题明确要求：
+
+```text
+每个设备最多输出 2 条。
+```
+
+因此应使用 `ROW_NUMBER()`。
+
+---
+
+### 常见错误
+
+#### 错误一：误筛选 ERROR
+
+错误写法：
+
+```sql
+WHERE status = 'ERROR'
+```
+
+或：
+
+```python
+.loc[lambda x: x['status'] == 'ERROR']
+```
+
+本题要求是：
+
+```text
+每个设备报警次数最高的前 2 天
+```
+
+不是：
+
+```text
+每个设备 ERROR 状态下报警次数最高的前 2 天
+```
+
+所以不应该先筛选 `ERROR`。
+
+---
+
+#### 错误二：用 rank 代替 cumcount
+
+错误写法：
+
+```python
+x.groupby('device_id')['alarm_count'].rank(method='min', ascending=False)
+```
+
+这个写法适合“按报警次数分档排名”，不适合“每个设备最多取 2 条记录”。
+
+本题应该使用：
+
+```python
+x.groupby('device_id').cumcount() + 1
+```
+
+前提是必须先完成正确排序。
+
+---
+
+#### 错误三：先 rank 后 sort
+
+如果先用 `rank()` 生成排名，再在后面排序：
+
+```python
+.assign(...)
+.sort_values(...)
+```
+
+后面的排序不会改变已经生成好的排名。
+
+所以如果排名依赖多个排序条件，例如：
+
+```text
+alarm_count DESC
+stat_date DESC
+```
+
+应该先 `sort_values()`，再用 `cumcount()` 生成行号。
+
+---
+
+### 核心记忆点
+
+```text
+Top N 条记录：
+ROW_NUMBER / cumcount
+
+Top N 档数值：
+RANK / DENSE_RANK / rank
+```
+
+```text
+题目说“最多输出 N 条”：
+优先用 ROW_NUMBER。
+
+题目说“前 N 名，允许并列都保留”：
+考虑 RANK 或 DENSE_RANK。
+```
+
+```text
+cumcount 依赖当前 DataFrame 行顺序；
+所以必须先 sort_values，再 cumcount。
+```
