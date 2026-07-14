@@ -1065,3 +1065,557 @@ RANK / DENSE_RANK / rank
 cumcount 依赖当前 DataFrame 行顺序；
 所以必须先 sort_values，再 cumcount。
 ```
+
+## Task 5：累计报警次数
+
+### 题目目标
+
+计算每个设备截至当天的累计报警次数。
+
+输出字段：
+
+```text
+device_id
+stat_date
+status
+alarm_count
+running_alarm_count
+```
+
+业务要求：
+
+```text
+每个设备内部按 stat_date 从早到晚累计 alarm_count。
+```
+
+---
+
+### Pattern 分类
+
+本题属于：
+
+```text
+Cumulative Analysis / 累计统计
+```
+
+核心逻辑是：
+
+```text
+按设备分组
+↓
+按日期排序
+↓
+从每个设备的第一条记录开始
+↓
+一直累计到当前行
+```
+
+---
+
+### SQL 解法
+
+```sql
+SELECT
+    device_id,
+    stat_date,
+    status,
+    alarm_count,
+    SUM(alarm_count) OVER(
+        PARTITION BY device_id
+        ORDER BY stat_date
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS running_alarm_count
+FROM df
+ORDER BY device_id, stat_date;
+```
+
+---
+
+### SQL 逻辑说明
+
+```sql
+PARTITION BY device_id
+```
+
+表示：
+
+```text
+每个设备单独累计。
+A 设备和 B 设备之间不会互相影响。
+```
+
+```sql
+ORDER BY stat_date
+```
+
+表示：
+
+```text
+每个设备内部按日期从早到晚排序。
+累计值必须依赖明确的时间顺序。
+```
+
+```sql
+SUM(alarm_count) OVER(...)
+```
+
+表示：
+
+```text
+在窗口范围内对 alarm_count 求和。
+```
+
+---
+
+## 重点：ROWS BETWEEN ... AND ... 的理解
+
+窗口函数里的：
+
+```sql
+ROWS BETWEEN 起点 AND 终点
+```
+
+表示：
+
+```text
+当前行计算时，窗口从哪里开始，到哪里结束。
+```
+
+它不是筛选最终结果，而是定义“当前这一行能看到哪些行”。
+
+---
+
+### 1. UNBOUNDED PRECEDING
+
+```sql
+UNBOUNDED PRECEDING
+```
+
+意思是：
+
+```text
+从当前分组的第一行开始。
+```
+
+例如：
+
+```sql
+ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+```
+
+意思是：
+
+```text
+从本设备第一条记录
+一直到当前行
+```
+
+这就是累计统计最常用的窗口范围。
+
+例如设备 A：
+
+| stat_date | alarm_count | 窗口范围 | running_alarm_count |
+|---|---:|---|---:|
+| 2026-01-01 | 2 | 2 | 2 |
+| 2026-01-02 | 5 | 2 + 5 | 7 |
+| 2026-01-03 | 6 | 2 + 5 + 6 | 13 |
+
+---
+
+### 2. CURRENT ROW
+
+```sql
+CURRENT ROW
+```
+
+意思是：
+
+```text
+当前这一行。
+```
+
+所以：
+
+```sql
+ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+```
+
+就是：
+
+```text
+从第一行累计到当前行。
+```
+
+它不会看到当前行之后的数据。
+
+---
+
+### 3. N PRECEDING
+
+```sql
+1 PRECEDING
+```
+
+意思是：
+
+```text
+当前行的前 1 行。
+```
+
+```sql
+2 PRECEDING
+```
+
+意思是：
+
+```text
+当前行的前 2 行。
+```
+
+注意：
+
+```text
+N PRECEDING 只表示当前行之前的 N 行。
+如果终点是 CURRENT ROW，那么窗口总行数 = N + 1。
+```
+
+例如：
+
+```sql
+ROWS BETWEEN 1 PRECEDING AND CURRENT ROW
+```
+
+表示：
+
+```text
+上一行 + 当前行
+```
+
+窗口最多 2 行。
+
+这通常用于最近 2 条记录的移动平均。
+
+---
+
+### 4. N FOLLOWING
+
+```sql
+1 FOLLOWING
+```
+
+意思是：
+
+```text
+当前行的后 1 行。
+```
+
+例如：
+
+```sql
+ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING
+```
+
+表示：
+
+```text
+当前行 + 下一行
+```
+
+这种在普通累计统计中不常用，但在向后观察、未来窗口分析中会出现。
+
+---
+
+## 常见窗口范围对照表
+
+| SQL 写法 | 中文理解 | 常见用途 |
+|---|---|---|
+| `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` | 从第一行到当前行 | 累计和、累计次数、累计平均 |
+| `ROWS BETWEEN 1 PRECEDING AND CURRENT ROW` | 上一行 + 当前行 | 最近 2 条移动平均 |
+| `ROWS BETWEEN 2 PRECEDING AND CURRENT ROW` | 前 2 行 + 当前行 | 最近 3 条移动平均 |
+| `ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING` | 当前行 + 下一行 | 向后窗口 |
+| `ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING` | 整个分组所有行 | 每组总和、每组均值 |
+
+---
+
+## 一个容易混淆的点
+
+```sql
+ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
+```
+
+不是“最近 2 行”。
+
+它表示：
+
+```text
+前 2 行 + 当前行
+```
+
+所以窗口最多是：
+
+```text
+3 行
+```
+
+如果你想算“最近 2 条记录”，应该写：
+
+```sql
+ROWS BETWEEN 1 PRECEDING AND CURRENT ROW
+```
+
+对应关系：
+
+| 业务说法 | SQL 写法 |
+|---|---|
+| 最近 2 条，包括当前行 | `ROWS BETWEEN 1 PRECEDING AND CURRENT ROW` |
+| 最近 3 条，包括当前行 | `ROWS BETWEEN 2 PRECEDING AND CURRENT ROW` |
+| 最近 N 条，包括当前行 | `ROWS BETWEEN N-1 PRECEDING AND CURRENT ROW` |
+
+---
+
+## ROWS 和 RANGE 的区别
+
+窗口函数里有时会看到：
+
+```sql
+ROWS BETWEEN ...
+```
+
+也可能看到：
+
+```sql
+RANGE BETWEEN ...
+```
+
+当前阶段建议优先使用：
+
+```sql
+ROWS
+```
+
+原因是：
+
+```text
+ROWS 是按物理行数计算窗口。
+RANGE 是按排序字段的值范围计算窗口。
+```
+
+如果 `ORDER BY stat_date` 中存在重复日期，`RANGE` 可能会把相同日期的多行一起纳入窗口，结果和你想象的不一样。
+
+而：
+
+```sql
+ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+```
+
+含义更明确：
+
+```text
+按排序后的行，一行一行累计。
+```
+
+所以在做累计统计、移动平均时，建议显式写 `ROWS BETWEEN ... AND ...`。
+
+---
+
+## Pandas 解法
+
+```python
+df_pd = (
+    df
+    .sort_values(by=['device_id', 'stat_date'])
+    .assign(
+        running_alarm_count=lambda x: (
+            x.groupby('device_id')['alarm_count'].cumsum()
+        )
+    )
+    [
+        [
+            'device_id',
+            'stat_date',
+            'status',
+            'alarm_count',
+            'running_alarm_count'
+        ]
+    ]
+    .reset_index(drop=True)
+)
+
+df_pd
+```
+
+---
+
+### Pandas 逻辑说明
+
+```python
+.sort_values(by=['device_id', 'stat_date'])
+```
+
+先保证每个设备内部按日期从早到晚排列。
+
+```python
+.groupby('device_id')['alarm_count'].cumsum()
+```
+
+表示：
+
+```text
+每个设备单独累计 alarm_count。
+```
+
+它对应 SQL 中的：
+
+```sql
+SUM(alarm_count) OVER(
+    PARTITION BY device_id
+    ORDER BY stat_date
+    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+)
+```
+
+---
+
+## SQL / Pandas 对应关系
+
+| 目的 | SQL | Pandas |
+|---|---|---|
+| 按设备分组 | `PARTITION BY device_id` | `groupby('device_id')` |
+| 按日期排序 | `ORDER BY stat_date` | `sort_values(['device_id', 'stat_date'])` |
+| 从第一行累计到当前行 | `ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` | `cumsum()` |
+| 累计报警次数 | `SUM(alarm_count) OVER(...)` | `groupby()['alarm_count'].cumsum()` |
+
+---
+
+## 常见错误
+
+### 错误一：没有按日期排序
+
+如果没有：
+
+```sql
+ORDER BY stat_date
+```
+
+或者 Pandas 中没有：
+
+```python
+sort_values(by=['device_id', 'stat_date'])
+```
+
+累计顺序就不可靠。
+
+累计统计必须有明确顺序。
+
+---
+
+### 错误二：把移动窗口和累计窗口混淆
+
+累计窗口：
+
+```sql
+ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+```
+
+含义是：
+
+```text
+从第一行到当前行。
+```
+
+移动窗口：
+
+```sql
+ROWS BETWEEN 1 PRECEDING AND CURRENT ROW
+```
+
+含义是：
+
+```text
+上一行 + 当前行。
+```
+
+两者不是一回事。
+
+---
+
+### 错误三：把 2 PRECEDING 理解成最近 2 条
+
+```sql
+ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
+```
+
+实际是：
+
+```text
+前 2 条 + 当前条 = 最多 3 条。
+```
+
+如果业务要最近 2 条，应该写：
+
+```sql
+ROWS BETWEEN 1 PRECEDING AND CURRENT ROW
+```
+
+---
+
+### 错误四：同一天多条记录时排序不唯一
+
+如果一个设备同一天可能有多条记录，仅仅写：
+
+```sql
+ORDER BY stat_date
+```
+
+可能不够稳定。
+
+真实业务里最好加更细的排序字段，例如：
+
+```sql
+ORDER BY stat_date, collect_time
+```
+
+或者：
+
+```sql
+ORDER BY stat_date, record_id
+```
+
+Pandas 也一样：
+
+```python
+sort_values(by=['device_id', 'stat_date', 'record_id'])
+```
+
+---
+
+## 核心记忆点
+
+```text
+累计统计：
+从第一行到当前行。
+```
+
+```sql
+ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+```
+
+```text
+最近 N 条：
+前 N-1 行 + 当前行。
+```
+
+```sql
+ROWS BETWEEN N-1 PRECEDING AND CURRENT ROW
+```
+
+```text
+1 PRECEDING + CURRENT ROW = 最近 2 条。
+2 PRECEDING + CURRENT ROW = 最近 3 条。
+```
+
+```text
+ROWS 是按行数算窗口。
+RANGE 是按排序值范围算窗口。
+当前阶段优先写 ROWS。
+```
