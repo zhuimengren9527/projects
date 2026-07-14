@@ -2244,3 +2244,821 @@ groupby().rolling() 之后通常要 reset_index(level=0, drop=True)。
 移动平均用 rolling。
 累计平均用 expanding。
 ```
+
+## Task 7：上个月同日报警次数对比与增长率
+
+### 题目目标
+
+计算每个设备当天报警次数与上个月同日相比的变化量和增长率。
+
+输出字段：
+
+```text
+device_id
+stat_date
+status
+alarm_count
+previous_month_alarm_count
+alarm_count_diff
+growth_rate
+growth_rate_pct
+```
+
+业务要求：
+
+```text
+如果没有上个月同日记录：
+previous_month_alarm_count = NULL / NaN
+alarm_count_diff = NULL / NaN
+growth_rate = NULL / NaN
+growth_rate_pct = NULL / NaN
+
+如果上个月同日报警次数为 0：
+alarm_count_diff 可以正常计算
+growth_rate = NULL / NaN
+growth_rate_pct = NULL / NaN
+```
+
+---
+
+### Pattern 分类
+
+本题属于：
+
+```text
+Time Comparison / 指定时间点比较 / 增长率分析
+```
+
+更准确地说，本题不是比较上一条记录，而是比较：
+
+```text
+当前日期
+vs
+上个月同日
+```
+
+所以不能直接使用：
+
+```text
+LAG()
+shift(1)
+```
+
+因为它们取的是上一条记录，而不是上个月同日记录。
+
+---
+
+### 核心业务理解
+
+本题要找的是：
+
+```text
+同一个 device_id
+并且日期是当前日期的上一个自然月同一天
+```
+
+例如：
+
+```text
+2026-02-01 对比 2026-01-01
+2026-02-02 对比 2026-01-02
+2026-03-05 对比 2026-02-05
+```
+
+所以本题的核心方法是：
+
+```text
+复制一张原表
+↓
+把复制表 stat_date 加 1 个自然月
+↓
+把 alarm_count 改名为 previous_month_alarm_count
+↓
+用 device_id + stat_date 合并回原表
+↓
+计算 diff 和 growth_rate
+```
+
+---
+
+### SQL 解法
+
+```sql
+WITH previous_month AS (
+    SELECT
+        device_id,
+        stat_date + INTERVAL 1 MONTH AS stat_date,
+        alarm_count AS previous_month_alarm_count
+    FROM df
+),
+
+join_table AS (
+    SELECT
+        curr.device_id,
+        curr.stat_date,
+        curr.status,
+        curr.alarm_count,
+        prev.previous_month_alarm_count
+    FROM df AS curr
+    LEFT JOIN previous_month AS prev
+        ON curr.device_id = prev.device_id
+       AND curr.stat_date = prev.stat_date
+),
+
+diff_table AS (
+    SELECT
+        device_id,
+        stat_date,
+        status,
+        alarm_count,
+        previous_month_alarm_count,
+        alarm_count - previous_month_alarm_count AS alarm_count_diff
+    FROM join_table
+)
+
+SELECT
+    device_id,
+    stat_date,
+    status,
+    alarm_count,
+    previous_month_alarm_count,
+    alarm_count_diff,
+    CASE
+        WHEN previous_month_alarm_count IS NULL
+          OR previous_month_alarm_count = 0
+        THEN NULL
+        ELSE ROUND(alarm_count_diff * 1.0 / previous_month_alarm_count, 2)
+    END AS growth_rate,
+    CASE
+        WHEN previous_month_alarm_count IS NULL
+          OR previous_month_alarm_count = 0
+        THEN NULL
+        ELSE ROUND(alarm_count_diff * 100.0 / previous_month_alarm_count, 2)
+    END AS growth_rate_pct
+FROM diff_table
+ORDER BY device_id, stat_date;
+```
+
+---
+
+### SQL 逻辑说明
+
+第一步，构造上个月数据表：
+
+```sql
+WITH previous_month AS (
+    SELECT
+        device_id,
+        stat_date + INTERVAL 1 MONTH AS stat_date,
+        alarm_count AS previous_month_alarm_count
+    FROM df
+)
+```
+
+这一步的含义是：
+
+```text
+把上个月的数据移动到本月的位置。
+```
+
+例如：
+
+```text
+A | 2026-01-01 | alarm_count = 2
+```
+
+变成：
+
+```text
+A | 2026-02-01 | previous_month_alarm_count = 2
+```
+
+这样它就可以和当前表中的：
+
+```text
+A | 2026-02-01 | alarm_count = 3
+```
+
+对齐。
+
+---
+
+第二步，使用 LEFT JOIN 合并回当前表：
+
+```sql
+FROM df AS curr
+LEFT JOIN previous_month AS prev
+    ON curr.device_id = prev.device_id
+   AND curr.stat_date = prev.stat_date
+```
+
+这里必须使用：
+
+```text
+LEFT JOIN
+```
+
+原因是：
+
+```text
+要保留当前表中的所有记录。
+如果找不到上个月同日数据，previous_month_alarm_count 应该保留为 NULL。
+```
+
+不能使用 `INNER JOIN`，否则没有上个月同日数据的当前记录会被删除。
+
+---
+
+第三步，计算变化量：
+
+```sql
+alarm_count - previous_month_alarm_count AS alarm_count_diff
+```
+
+如果 `previous_month_alarm_count` 是 `NULL`，那么 `alarm_count_diff` 也是 `NULL`。
+
+如果 `previous_month_alarm_count = 0`，差值仍然可以计算。
+
+例如：
+
+```text
+当前值 = 8
+上个月值 = 0
+
+alarm_count_diff = 8 - 0 = 8
+```
+
+---
+
+第四步，计算增长率：
+
+```sql
+CASE
+    WHEN previous_month_alarm_count IS NULL
+      OR previous_month_alarm_count = 0
+    THEN NULL
+    ELSE ROUND(alarm_count_diff * 1.0 / previous_month_alarm_count, 2)
+END AS growth_rate
+```
+
+增长率公式是：
+
+```text
+growth_rate = alarm_count_diff / previous_month_alarm_count
+```
+
+但是如果分母是 `NULL` 或者 `0`，都不能计算增长率。
+
+所以要先排除：
+
+```text
+previous_month_alarm_count IS NULL
+OR previous_month_alarm_count = 0
+```
+
+---
+
+### 为什么 SQL 中要拆多个 CTE
+
+本题中建议拆成三层：
+
+```text
+previous_month
+join_table
+diff_table
+```
+
+原因是计算链条比较清楚：
+
+```text
+previous_month：
+先构造上个月同日数据。
+
+join_table：
+把当前数据和上个月数据对齐。
+
+diff_table：
+先计算 alarm_count_diff。
+
+最终 SELECT：
+再基于 alarm_count_diff 计算 growth_rate。
+```
+
+不要在同一层 SELECT 中过度引用刚定义的别名。
+
+例如不推荐：
+
+```sql
+SELECT
+    alarm_count - previous_month_alarm_count AS alarm_count_diff,
+    alarm_count_diff / previous_month_alarm_count AS growth_rate
+FROM ...
+```
+
+因为不同 SQL 引擎对“同一层 SELECT 中引用刚定义的别名”的支持不完全一致。
+
+更稳妥的写法是：
+
+```text
+先在一个 CTE 中算出中间字段；
+下一层再继续使用这个字段。
+```
+
+---
+
+### Pandas 解法
+
+```python
+df_prev = (
+    df
+    .assign(
+        stat_date=lambda x: (
+            x['stat_date'] + pd.DateOffset(months=1)
+        )
+    )
+    .rename(
+        columns={
+            'alarm_count': 'previous_month_alarm_count'
+        }
+    )
+    [
+        [
+            'device_id',
+            'stat_date',
+            'previous_month_alarm_count'
+        ]
+    ]
+)
+
+df_pd = (
+    df
+    .merge(
+        df_prev,
+        how='left',
+        on=['device_id', 'stat_date']
+    )
+    .assign(
+        alarm_count_diff=lambda x: (
+            x['alarm_count'] - x['previous_month_alarm_count']
+        ),
+        growth_rate=lambda x: (
+            (x['alarm_count_diff'] / x['previous_month_alarm_count'])
+            .where(
+                x['previous_month_alarm_count'].notna()
+                & (x['previous_month_alarm_count'] != 0)
+            )
+        ),
+        growth_rate_pct=lambda x: (
+            (x['alarm_count_diff'] * 100 / x['previous_month_alarm_count'])
+            .where(
+                x['previous_month_alarm_count'].notna()
+                & (x['previous_month_alarm_count'] != 0)
+            )
+        )
+    )
+    [
+        [
+            'device_id',
+            'stat_date',
+            'status',
+            'alarm_count',
+            'previous_month_alarm_count',
+            'alarm_count_diff',
+            'growth_rate',
+            'growth_rate_pct'
+        ]
+    ]
+    .sort_values(by=['device_id', 'stat_date'])
+    .reset_index(drop=True)
+)
+
+df_pd
+```
+
+---
+
+### Pandas 逻辑说明
+
+第一步，构造上个月数据表：
+
+```python
+df_prev = (
+    df
+    .assign(
+        stat_date=lambda x: (
+            x['stat_date'] + pd.DateOffset(months=1)
+        )
+    )
+    .rename(
+        columns={
+            'alarm_count': 'previous_month_alarm_count'
+        }
+    )
+)
+```
+
+这一步的含义是：
+
+```text
+把原始表中的日期整体向后平移 1 个自然月。
+```
+
+例如：
+
+```text
+2026-01-01
+```
+
+会变成：
+
+```text
+2026-02-01
+```
+
+这样 1 月的数据就能和 2 月的当前日期对齐。
+
+---
+
+第二步，只保留右表需要的字段：
+
+```python
+[
+    [
+        'device_id',
+        'stat_date',
+        'previous_month_alarm_count'
+    ]
+]
+```
+
+右表不需要保留 `status`。
+
+如果右表也保留 `status`，merge 后会出现：
+
+```text
+status_x
+status_y
+```
+
+这会让结果字段变乱。
+
+因此右表只保留：
+
+```text
+device_id
+stat_date
+previous_month_alarm_count
+```
+
+---
+
+第三步，合并回当前表：
+
+```python
+.merge(
+    df_prev,
+    how='left',
+    on=['device_id', 'stat_date']
+)
+```
+
+这里使用：
+
+```text
+how='left'
+```
+
+原因是：
+
+```text
+保留当前表中的所有记录。
+如果没有上个月同日数据，就让 previous_month_alarm_count 为 NaN。
+```
+
+匹配键必须是：
+
+```text
+device_id + stat_date
+```
+
+不能只按 `stat_date` 合并，否则不同设备之间会互相匹配。
+
+---
+
+第四步，计算变化量：
+
+```python
+alarm_count_diff=lambda x: (
+    x['alarm_count'] - x['previous_month_alarm_count']
+)
+```
+
+如果 `previous_month_alarm_count` 是 `NaN`，那么 `alarm_count_diff` 也会是 `NaN`。
+
+如果 `previous_month_alarm_count = 0`，差值可以正常计算。
+
+---
+
+第五步，计算增长率：
+
+```python
+growth_rate=lambda x: (
+    (x['alarm_count_diff'] / x['previous_month_alarm_count'])
+    .where(
+        x['previous_month_alarm_count'].notna()
+        & (x['previous_month_alarm_count'] != 0)
+    )
+)
+```
+
+这里使用 `.where()`，不是 `.loc[]`。
+
+原因是：
+
+```text
+本题要求保留所有当前记录；
+只是当上个月值为空或为 0 时，不计算增长率。
+```
+
+`.loc[]` 会筛选行，不符合条件的行会被删除。
+
+`.where()` 不删除行，只控制字段值。
+
+---
+
+### where 的业务含义
+
+```python
+.where(condition)
+```
+
+可以理解成：
+
+```text
+条件为 True：
+保留当前计算结果。
+
+条件为 False：
+变成 NaN。
+```
+
+本题的条件是：
+
+```python
+x['previous_month_alarm_count'].notna()
+& (x['previous_month_alarm_count'] != 0)
+```
+
+含义是：
+
+```text
+上个月同日报警次数不是空
+并且
+上个月同日报警次数不等于 0
+```
+
+只有满足这个条件，增长率才有意义。
+
+---
+
+### diff 和 growth_rate 的区别
+
+`alarm_count_diff` 是绝对变化量：
+
+```text
+alarm_count_diff = 当前值 - 上个月值
+```
+
+`growth_rate` 是相对变化率：
+
+```text
+growth_rate = (当前值 - 上个月值) / 上个月值
+```
+
+例如：
+
+```text
+从 10 到 15：
+diff = 5
+growth_rate = 50%
+
+从 100 到 105：
+diff = 5
+growth_rate = 5%
+```
+
+两者的 `diff` 都是 5，但业务意义完全不同。
+
+所以真实分析中，通常要同时看：
+
+```text
+绝对变化量
+相对变化率
+```
+
+---
+
+### 上个月值为 0 时的处理
+
+如果：
+
+```text
+previous_month_alarm_count = 0
+```
+
+那么：
+
+```text
+alarm_count_diff 可以计算
+growth_rate 不能计算
+```
+
+例如：
+
+```text
+当前值 = 8
+上个月值 = 0
+```
+
+则：
+
+```text
+alarm_count_diff = 8 - 0 = 8
+growth_rate = NaN
+```
+
+不能写成：
+
+```text
+增长率无限大
+```
+
+也不能写成：
+
+```text
+增长率 0%
+```
+
+更合理的业务表达是：
+
+```text
+上个月为 0，本月新增 8 次报警。
+```
+
+---
+
+### SQL / Pandas 对应关系
+
+| 目的 | SQL | Pandas |
+|---|---|---|
+| 构造上个月数据 | `stat_date + INTERVAL 1 MONTH` | `stat_date + pd.DateOffset(months=1)` |
+| 合并当前表和上月表 | `LEFT JOIN` | `merge(..., how='left')` |
+| 按设备和日期匹配 | `ON device_id AND stat_date` | `on=['device_id', 'stat_date']` |
+| 计算差值 | `alarm_count - previous_month_alarm_count` | `alarm_count - previous_month_alarm_count` |
+| 排除 NULL / NaN | `IS NULL` | `.notna()` |
+| 排除 0 分母 | `= 0` | `!= 0` |
+| 条件计算增长率 | `CASE WHEN ... THEN NULL ELSE ... END` | `.where(condition)` |
+
+---
+
+### 常见错误
+
+#### 错误一：用 LAG / shift 取上个月同日
+
+`LAG()` 和 `shift(1)` 取的是上一条记录。
+
+本题要的是：
+
+```text
+上个月同日
+```
+
+这是指定时间点比较，应该使用：
+
+```text
+日期偏移 + join / merge
+```
+
+---
+
+#### 错误二：右表保留多余字段
+
+如果 Pandas 中右表 `df_prev` 保留了 `status`，merge 后会产生：
+
+```text
+status_x
+status_y
+```
+
+所以右表只保留需要参与匹配和计算的字段：
+
+```text
+device_id
+stat_date
+previous_month_alarm_count
+```
+
+---
+
+#### 错误三：用 loc 删除无效增长率行
+
+错误写法：
+
+```python
+.loc[
+    lambda x: (
+        x['previous_month_alarm_count'].notna()
+        & (x['previous_month_alarm_count'] != 0)
+    )
+]
+```
+
+这会删除没有上个月数据或上个月值为 0 的记录。
+
+本题要求保留所有当前记录，所以应该用：
+
+```python
+.where(...)
+```
+
+---
+
+#### 错误四：没有处理分母为 0
+
+增长率公式中，分母是：
+
+```text
+previous_month_alarm_count
+```
+
+如果它等于 0，不能直接除。
+
+SQL 中要写：
+
+```sql
+CASE
+    WHEN previous_month_alarm_count IS NULL
+      OR previous_month_alarm_count = 0
+    THEN NULL
+    ELSE ...
+END
+```
+
+Pandas 中要写：
+
+```python
+.where(
+    x['previous_month_alarm_count'].notna()
+    & (x['previous_month_alarm_count'] != 0)
+)
+```
+
+---
+
+#### 错误五：没有 ORDER BY / sort_values
+
+SQL 如果没有：
+
+```sql
+ORDER BY device_id, stat_date
+```
+
+结果显示顺序不可靠，容易误以为 `LEFT JOIN` 删除了缺失值行。
+
+Pandas 最后也建议加：
+
+```python
+.sort_values(by=['device_id', 'stat_date'])
+```
+
+---
+
+### 核心记忆点
+
+```text
+上个月同日不是上一条记录。
+```
+
+```text
+指定时间点比较：
+日期偏移 + join / merge。
+```
+
+```text
+LEFT JOIN / how='left'：
+保留当前表所有记录。
+```
+
+```text
+diff 可以在 previous = 0 时计算。
+growth_rate 不能在 previous = 0 时计算。
+```
+
+```text
+loc 会删除行。
+where 会保留行，只控制字段结果。
+```
+
+```text
+没有比较基准，不等于基准值为 0。
+```
