@@ -1619,3 +1619,628 @@ ROWS 是按行数算窗口。
 RANGE 是按排序值范围算窗口。
 当前阶段优先写 ROWS。
 ```
+
+## Task 6：最近 2 条记录的平均报警次数
+
+### 题目目标
+
+计算每个设备当前记录和上一条记录的平均报警次数。
+
+输出字段：
+
+```text
+device_id
+stat_date
+status
+alarm_count
+moving_avg_2_alarm_count
+```
+
+业务要求：
+
+```text
+每个设备第一条记录只有自己一条，也要计算平均值。
+```
+
+也就是说：
+
+```text
+第一条记录：
+只用当前 alarm_count 计算平均值。
+
+第二条及以后：
+用上一条 alarm_count 和当前 alarm_count 计算平均值。
+```
+
+---
+
+### Pattern 分类
+
+本题属于：
+
+```text
+Cumulative Analysis / Rolling Window
+```
+
+更准确地说，是：
+
+```text
+移动窗口平均值
+```
+
+核心逻辑是：
+
+```text
+按设备分组
+↓
+按日期排序
+↓
+每一行取最近 2 条记录
+↓
+计算 alarm_count 的平均值
+```
+
+---
+
+### SQL 解法
+
+```sql
+SELECT
+    device_id,
+    stat_date,
+    status,
+    alarm_count,
+    AVG(alarm_count) OVER(
+        PARTITION BY device_id
+        ORDER BY stat_date
+        ROWS BETWEEN 1 PRECEDING AND CURRENT ROW
+    ) AS moving_avg_2_alarm_count
+FROM df
+ORDER BY device_id, stat_date;
+```
+
+---
+
+### SQL 逻辑说明
+
+```sql
+PARTITION BY device_id
+```
+
+表示：
+
+```text
+每个设备单独计算移动平均。
+```
+
+```sql
+ORDER BY stat_date
+```
+
+表示：
+
+```text
+每个设备内部按日期从早到晚排序。
+```
+
+```sql
+ROWS BETWEEN 1 PRECEDING AND CURRENT ROW
+```
+
+表示：
+
+```text
+窗口范围 = 上一行 + 当前行
+```
+
+所以这不是累计到当前，而是只看最近 2 条记录。
+
+例如：
+
+| stat_date | alarm_count | 窗口范围 | moving_avg_2_alarm_count |
+|---|---:|---|---:|
+| 2026-01-01 | 2 | 2 | 2 |
+| 2026-01-02 | 5 | 2, 5 | 3.5 |
+| 2026-01-03 | 6 | 5, 6 | 5.5 |
+| 2026-01-04 | 4 | 6, 4 | 5 |
+
+注意：
+
+```text
+第一条记录没有上一行，所以窗口里只有当前行。
+AVG() 会自动只对当前这一条记录求平均。
+```
+
+不要把第一条记录的上一条补成 0。
+
+错误理解：
+
+```text
+第一条 = (当前值 + 0) / 2
+```
+
+正确理解：
+
+```text
+第一条 = 当前值本身
+```
+
+---
+
+## Pandas 解法
+
+```python
+df_pd = (
+    df
+    .sort_values(by=['device_id', 'stat_date'])
+    .assign(
+        moving_avg_2_alarm_count=lambda x: (
+            x.groupby('device_id')['alarm_count']
+             .rolling(2, min_periods=1)
+             .mean()
+             .reset_index(level=0, drop=True)
+        )
+    )
+    [
+        [
+            'device_id',
+            'stat_date',
+            'status',
+            'alarm_count',
+            'moving_avg_2_alarm_count'
+        ]
+    ]
+    .reset_index(drop=True)
+)
+
+df_pd
+```
+
+---
+
+## Pandas 重点：rolling() 的用法
+
+### 1. rolling() 是什么
+
+```python
+rolling()
+```
+
+可以理解成：
+
+```text
+滚动窗口
+```
+
+它会沿着当前 DataFrame 的行顺序，一行一行往下移动窗口。
+
+在本题中，先执行：
+
+```python
+sort_values(by=['device_id', 'stat_date'])
+```
+
+所以每个设备内部的行顺序是按日期从早到晚排列的。
+
+然后：
+
+```python
+rolling(2)
+```
+
+表示：
+
+```text
+每一行最多取最近 2 条记录。
+```
+
+也就是：
+
+```text
+当前行 + 前 1 行
+```
+
+---
+
+### 2. rolling(2) 的含义
+
+```python
+rolling(2)
+```
+
+这里的 `2` 表示窗口大小。
+
+它不是“前 2 条”。
+
+它表示：
+
+```text
+窗口最多包含 2 条记录。
+```
+
+如果窗口包含当前行，那么：
+
+```text
+rolling(2) = 当前行 + 前 1 行
+rolling(3) = 当前行 + 前 2 行
+rolling(N) = 当前行 + 前 N-1 行
+```
+
+所以：
+
+| 业务含义 | Pandas 写法 |
+|---|---|
+| 最近 2 条，包括当前行 | `rolling(2)` |
+| 最近 3 条，包括当前行 | `rolling(3)` |
+| 最近 N 条，包括当前行 | `rolling(N)` |
+
+这和 SQL 的对应关系是：
+
+| 业务含义 | SQL | Pandas |
+|---|---|---|
+| 最近 2 条 | `ROWS BETWEEN 1 PRECEDING AND CURRENT ROW` | `rolling(2)` |
+| 最近 3 条 | `ROWS BETWEEN 2 PRECEDING AND CURRENT ROW` | `rolling(3)` |
+| 最近 N 条 | `ROWS BETWEEN N-1 PRECEDING AND CURRENT ROW` | `rolling(N)` |
+
+---
+
+### 3. min_periods=1 的含义
+
+```python
+rolling(2, min_periods=1)
+```
+
+其中：
+
+```python
+min_periods=1
+```
+
+表示：
+
+```text
+窗口里至少有 1 条记录，就可以计算结果。
+```
+
+这对第一条记录很重要。
+
+如果只写：
+
+```python
+rolling(2).mean()
+```
+
+默认情况下，窗口必须满 2 条才计算平均值。
+
+那么每个设备第一条记录会得到：
+
+```text
+NaN
+```
+
+但本题要求：
+
+```text
+每个设备第一条记录只有自己一条，也要计算平均值。
+```
+
+所以必须写：
+
+```python
+rolling(2, min_periods=1).mean()
+```
+
+这样第一条记录窗口里虽然只有 1 条，也可以计算平均值。
+
+例如设备 A：
+
+| stat_date | alarm_count | rolling(2, min_periods=1) 的窗口 | 结果 |
+|---|---:|---|---:|
+| 2026-01-01 | 2 | 2 | 2 |
+| 2026-01-02 | 5 | 2, 5 | 3.5 |
+| 2026-01-03 | 6 | 5, 6 | 5.5 |
+
+---
+
+### 4. groupby().rolling() 的含义
+
+```python
+x.groupby('device_id')['alarm_count'].rolling(2, min_periods=1).mean()
+```
+
+这句的意思是：
+
+```text
+每个设备单独做 rolling。
+```
+
+如果不加：
+
+```python
+groupby('device_id')
+```
+
+那么 A 设备最后一条记录可能会和 B 设备第一条记录一起参与计算，这在业务上是错误的。
+
+所以移动平均必须先分组：
+
+```text
+每个设备内部单独滚动。
+```
+
+---
+
+### 5. 为什么要 reset_index(level=0, drop=True)
+
+执行：
+
+```python
+x.groupby('device_id')['alarm_count']
+ .rolling(2, min_periods=1)
+ .mean()
+```
+
+之后，Pandas 会生成一个带有多层索引的结果。
+
+大致类似：
+
+```text
+device_id   
+A          0    2.0
+           1    3.5
+           2    5.5
+B          3    1.0
+           4    2.5
+```
+
+这个结果的索引有两层：
+
+```text
+第 0 层：device_id
+第 1 层：原始行索引
+```
+
+但是 `.assign()` 需要把结果按原始行索引对齐回 DataFrame。
+
+所以要写：
+
+```python
+.reset_index(level=0, drop=True)
+```
+
+含义是：
+
+```text
+去掉第 0 层 device_id 索引；
+只保留原始行索引；
+让结果可以正确对齐回原 DataFrame。
+```
+
+记忆：
+
+```text
+groupby().rolling() 之后，通常要 reset_index(level=0, drop=True)。
+```
+
+---
+
+## 为什么不能用 shift().fillna(0)
+
+错误写法：
+
+```python
+df_pd = (
+    df
+    .sort_values(by=['device_id', 'stat_date'])
+    .assign(
+        previous_alarm_count=lambda x: (
+            x.groupby('device_id')['alarm_count']
+             .shift(1)
+             .fillna(0)
+        ),
+        moving_avg_2_alarm_count=lambda x: (
+            (x['alarm_count'] + x['previous_alarm_count']) / 2
+        )
+    )
+)
+```
+
+这个写法的问题是：
+
+```text
+把“没有上一条记录”
+错误理解成
+“上一条记录的报警次数为 0”
+```
+
+第一条记录如果 `alarm_count = 2`，会被算成：
+
+```text
+(2 + 0) / 2 = 1
+```
+
+但正确结果应该是：
+
+```text
+2
+```
+
+因为第一条记录只有自己一条，平均值就是自己。
+
+所以：
+
+```text
+缺少上一条记录，不等于上一条记录为 0。
+```
+
+移动平均不要随便 `fillna(0)`。
+
+---
+
+## rolling 和 expanding 的区别
+
+| 方法 | 窗口范围 | 适用场景 |
+|---|---|---|
+| `expanding()` | 从第一行到当前行，窗口越来越大 | 累计平均、累计统计 |
+| `rolling(N)` | 最近 N 条记录，窗口大小固定 | 移动平均、最近 N 条统计 |
+
+例如 alarm_count 为：
+
+```text
+2, 5, 6, 4
+```
+
+`expanding().mean()`：
+
+```text
+第 1 行：2
+第 2 行：(2 + 5) / 2 = 3.5
+第 3 行：(2 + 5 + 6) / 3 = 4.33
+第 4 行：(2 + 5 + 6 + 4) / 4 = 4.25
+```
+
+`rolling(2, min_periods=1).mean()`：
+
+```text
+第 1 行：2
+第 2 行：(2 + 5) / 2 = 3.5
+第 3 行：(5 + 6) / 2 = 5.5
+第 4 行：(6 + 4) / 2 = 5
+```
+
+核心区别：
+
+```text
+expanding 是从开头累计到当前。
+rolling 是只看最近 N 条。
+```
+
+---
+
+## SQL / Pandas 对应关系
+
+| 目的 | SQL | Pandas |
+|---|---|---|
+| 按设备分组 | `PARTITION BY device_id` | `groupby('device_id')` |
+| 按日期排序 | `ORDER BY stat_date` | `sort_values(['device_id', 'stat_date'])` |
+| 最近 2 条窗口 | `ROWS BETWEEN 1 PRECEDING AND CURRENT ROW` | `rolling(2, min_periods=1)` |
+| 计算平均值 | `AVG(alarm_count)` | `.mean()` |
+| 第一条也计算 | `AVG()` 自动只算当前行 | `min_periods=1` |
+
+---
+
+## 常见错误
+
+### 错误一：用 fillna(0) 补上一条记录
+
+错误原因：
+
+```text
+没有上一条记录，不等于上一条记录为 0。
+```
+
+第一条记录应该只用自己计算平均值。
+
+---
+
+### 错误二：忘记 min_periods=1
+
+如果写：
+
+```python
+rolling(2).mean()
+```
+
+每个设备第一条记录会得到 `NaN`。
+
+本题要求第一条也计算，所以要写：
+
+```python
+rolling(2, min_periods=1).mean()
+```
+
+---
+
+### 错误三：忘记 groupby
+
+如果直接写：
+
+```python
+df['alarm_count'].rolling(2, min_periods=1).mean()
+```
+
+不同设备之间会串在一起计算。
+
+应该写：
+
+```python
+df.groupby('device_id')['alarm_count'].rolling(2, min_periods=1).mean()
+```
+
+---
+
+### 错误四：忘记 reset_index(level=0, drop=True)
+
+`groupby().rolling()` 的结果是多层索引，直接放回 `.assign()` 可能无法正确对齐。
+
+应该写：
+
+```python
+.reset_index(level=0, drop=True)
+```
+
+---
+
+### 错误五：把 rolling(2) 理解成“前 2 条”
+
+```python
+rolling(2)
+```
+
+表示：
+
+```text
+窗口总大小为 2。
+```
+
+不是：
+
+```text
+前 2 条 + 当前条。
+```
+
+如果要“当前条 + 前 2 条”，应该写：
+
+```python
+rolling(3)
+```
+
+---
+
+## 核心记忆点
+
+```text
+rolling(N) = 最近 N 条记录，包括当前行。
+```
+
+```text
+rolling(2) = 当前行 + 前 1 行。
+rolling(3) = 当前行 + 前 2 行。
+```
+
+```text
+min_periods=1 = 窗口里至少 1 条就计算。
+```
+
+```text
+groupby().rolling() 之后通常要 reset_index(level=0, drop=True)。
+```
+
+```text
+没有上一条记录，不等于上一条记录为 0。
+```
+
+```text
+移动平均用 rolling。
+累计平均用 expanding。
+```
