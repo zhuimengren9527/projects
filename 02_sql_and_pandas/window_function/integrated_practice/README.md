@@ -3062,3 +3062,820 @@ where 会保留行，只控制字段结果。
 ```text
 没有比较基准，不等于基准值为 0。
 ```
+
+# 综合练习 2：设备运行风险综合分析
+
+## 一、练习名称
+
+设备运行风险综合分析
+
+对应文件：
+
+```text
+integrated_practice/02_device_log_join_integrated_analysis.ipynb
+```
+
+---
+
+## 二、练习目标
+
+本练习基于两张表：
+
+```text
+df_device：设备台账表
+df_log：设备运行日志表
+```
+
+目标是生成一张设备级别的综合分析结果表，用于判断：
+
+```text
+1. 哪些设备累计报警较多；
+2. 哪些设备出现过 ERROR；
+3. 哪些设备存在连续 ERROR；
+4. 哪些设备最近状态异常；
+5. 哪些日志设备没有登记在设备台账中；
+6. 哪些登记设备没有任何日志；
+7. 哪些设备整体运行风险较高。
+```
+
+本题不是单一 Pattern 练习，而是一次综合分析流程训练。
+
+最终结果要求：
+
+```text
+一行 = 一台设备
+```
+
+---
+
+## 三、输入表
+
+### 1. 设备台账表：df_device
+
+字段：
+
+```text
+device_id
+site
+runway
+device_type
+model
+install_date
+```
+
+字段含义：
+
+| 字段 | 含义 |
+|---|---|
+| device_id | 设备编号 |
+| site | 所属站点 |
+| runway | 所属跑道方向 |
+| device_type | 设备类型 |
+| model | 设备型号 |
+| install_date | 投产日期 |
+
+---
+
+### 2. 设备运行日志表：df_log
+
+字段：
+
+```text
+device_id
+stat_date
+status
+alarm_count
+```
+
+字段含义：
+
+| 字段 | 含义 |
+|---|---|
+| device_id | 设备编号 |
+| stat_date | 日志日期 |
+| status | 当日运行状态 |
+| alarm_count | 当日报警次数 |
+
+`status` 取值：
+
+```text
+NORMAL
+WARN
+ERROR
+```
+
+---
+
+## 四、最终输出字段
+
+最终结果表字段如下：
+
+```text
+device_id
+site
+runway
+device_type
+model
+has_device_info
+has_log
+first_log_date
+latest_stat_date
+latest_status
+total_alarm_count
+error_days
+warn_days
+max_consecutive_error_days
+equipment_risk_score
+risk_rank
+risk_level
+data_quality_status
+```
+
+---
+
+## 五、字段含义与计算规则
+
+### 1. has_device_info
+
+表示该设备是否存在于设备台账表 `df_device` 中。
+
+规则：
+
+```text
+如果 device_id 能在 df_device 中找到，has_device_info = True
+否则 has_device_info = False
+```
+
+这个字段用于识别：
+
+```text
+日志表中出现了，但设备台账中没有登记的设备。
+```
+
+---
+
+### 2. has_log
+
+表示该设备是否存在运行日志。
+
+规则：
+
+```text
+如果 device_id 能在 df_log 中找到，has_log = True
+否则 has_log = False
+```
+
+这个字段用于识别：
+
+```text
+设备台账中登记了，但日志表中没有任何记录的设备。
+```
+
+---
+
+### 3. first_log_date
+
+设备最早一条日志日期。
+
+规则：
+
+```sql
+MIN(stat_date)
+```
+
+按 `device_id` 分组计算。
+
+---
+
+### 4. latest_stat_date
+
+设备最近一条日志日期。
+
+规则：
+
+```sql
+MAX(stat_date)
+```
+
+按 `device_id` 分组计算。
+
+---
+
+### 5. latest_status
+
+设备最近一条日志对应的状态。
+
+不能直接使用：
+
+```sql
+MAX(status)
+```
+
+因为 `MAX(status)` 只是按字符串大小取最大值，不代表最近日期的状态。
+
+正确做法：
+
+```text
+按 device_id 分组；
+按 stat_date 降序排序；
+使用 ROW_NUMBER() 取每组 rn = 1 的记录。
+```
+
+核心 SQL：
+
+```sql
+ROW_NUMBER() OVER (
+    PARTITION BY device_id
+    ORDER BY stat_date DESC
+)
+```
+
+---
+
+### 6. total_alarm_count
+
+设备累计报警次数。
+
+规则：
+
+```sql
+SUM(alarm_count)
+```
+
+按 `device_id` 分组计算。
+
+---
+
+### 7. error_days
+
+设备出现 `ERROR` 的天数。
+
+规则：
+
+```sql
+SUM(
+    CASE
+        WHEN status = 'ERROR' THEN 1
+        ELSE 0
+    END
+)
+```
+
+---
+
+### 8. warn_days
+
+设备出现 `WARN` 的天数。
+
+规则：
+
+```sql
+SUM(
+    CASE
+        WHEN status = 'WARN' THEN 1
+        ELSE 0
+    END
+)
+```
+
+---
+
+### 9. max_consecutive_error_days
+
+设备最长连续 `ERROR` 天数。
+
+本字段需要使用 Gap & Island 思路。
+
+连续 ERROR 的要求：
+
+```text
+当前记录 status = 'ERROR'
+并且日期必须自然连续
+```
+
+也就是说，不能只判断上一条是否也是 `ERROR`，还要判断：
+
+```text
+当前 ERROR 日期 = 上一条 ERROR 日期 + 1 天
+```
+
+如果中间日期断档，则必须重新开启一个 ERROR 段。
+
+核心判断：
+
+```sql
+CASE
+    WHEN is_error = TRUE
+     AND (
+            previous_is_error = FALSE
+         OR stat_date > previous_date + INTERVAL 1 DAY
+     )
+    THEN 1
+    ELSE 0
+END AS error_start_sign
+```
+
+然后通过累计求和生成连续段编号：
+
+```sql
+SUM(error_start_sign) OVER (
+    PARTITION BY device_id
+    ORDER BY stat_date
+) AS phase_sign
+```
+
+最后按 `device_id + phase_sign` 分组统计每段长度，再取最大值。
+
+---
+
+### 10. equipment_risk_score
+
+设备运行风险分数。
+
+计算公式：
+
+```text
+equipment_risk_score
+=
+total_alarm_count
++ error_days * 5
++ max_consecutive_error_days * 10
+```
+
+SQL 中要注意空值处理：
+
+```sql
+COALESCE(max_consecutive_error_days, 0)
+```
+
+否则如果设备没有 ERROR，`max_consecutive_error_days` 为空，整个风险分数会变成 `NULL`。
+
+---
+
+### 11. risk_rank
+
+设备风险排名。
+
+规则：
+
+```text
+按照 equipment_risk_score 从高到低排名。
+如果分数相同，使用并列排名。
+```
+
+SQL 使用：
+
+```sql
+RANK() OVER (
+    ORDER BY equipment_risk_score DESC
+)
+```
+
+---
+
+### 12. risk_level
+
+设备风险等级。
+
+判断顺序从上到下：
+
+| 条件 | risk_level |
+|---|---|
+| has_log = False | NO_LOG |
+| latest_status = 'ERROR' | HIGH |
+| max_consecutive_error_days >= 2 | HIGH |
+| equipment_risk_score >= 35 | HIGH |
+| error_days >= 1 | MEDIUM |
+| latest_status = 'WARN' | MEDIUM |
+| total_alarm_count >= 10 | MEDIUM |
+| 其他情况 | LOW |
+
+SQL 写法：
+
+```sql
+CASE
+    WHEN has_log = FALSE THEN 'NO_LOG'
+    WHEN latest_status = 'ERROR' THEN 'HIGH'
+    WHEN max_consecutive_error_days >= 2 THEN 'HIGH'
+    WHEN equipment_risk_score >= 35 THEN 'HIGH'
+    WHEN error_days >= 1 THEN 'MEDIUM'
+    WHEN latest_status = 'WARN' THEN 'MEDIUM'
+    WHEN total_alarm_count >= 10 THEN 'MEDIUM'
+    ELSE 'LOW'
+END AS risk_level
+```
+
+注意：
+
+```text
+CASE WHEN 会从上往下判断。
+一旦命中某个条件，就返回对应结果，后面的条件不再判断。
+```
+
+---
+
+### 13. data_quality_status
+
+数据质量状态。
+
+规则：
+
+| 条件 | data_quality_status |
+|---|---|
+| has_device_info = False | UNKNOWN_DEVICE |
+| has_log = False | NO_LOG |
+| 其他情况 | OK |
+
+SQL 写法：
+
+```sql
+CASE
+    WHEN has_device_info = FALSE THEN 'UNKNOWN_DEVICE'
+    WHEN has_log = FALSE THEN 'NO_LOG'
+    ELSE 'OK'
+END AS data_quality_status
+```
+
+---
+
+## 六、SQL 分析流程
+
+本练习最终结果不是一次性从原始表中直接查出来，而是通过多个中间表逐步合并。
+
+整体流程如下：
+
+```text
+df_device + df_log
+↓
+all_devices：设备全集
+↓
+df_device_flags：has_device_info / has_log
+↓
+df_device_base：设备基础信息 + 标记字段
+↓
+df_log_summary：日志聚合指标
+↓
+df_latest_status：最近状态
+↓
+df_consecutive_error：最长连续 ERROR 天数
+↓
+final_base：合并所有指标
+↓
+risk_rank / risk_level / data_quality_status
+↓
+最终设备风险分析表
+```
+
+---
+
+## 七、中间表说明
+
+### 1. all_devices
+
+设备全集。
+
+来源：
+
+```sql
+SELECT device_id FROM df_device
+UNION
+SELECT device_id FROM df_log
+```
+
+作用：
+
+```text
+保证最终结果既包含设备台账中的设备，
+也包含日志表中出现但台账中没有登记的设备。
+```
+
+不能只用 `df_device`，否则会漏掉未知设备。
+
+不能只用 `df_log`，否则会漏掉没有日志的登记设备。
+
+---
+
+### 2. df_device_flags
+
+字段：
+
+```text
+device_id
+has_device_info
+has_log
+```
+
+作用：
+
+```text
+判断设备是否存在台账信息；
+判断设备是否存在日志记录。
+```
+
+核心方法：
+
+```sql
+EXISTS
+```
+
+理解：
+
+```text
+EXISTS 判断子查询是否查得到结果。
+查得到，返回 TRUE。
+查不到，返回 FALSE。
+```
+
+---
+
+### 3. df_device_base
+
+字段：
+
+```text
+device_id
+site
+runway
+device_type
+model
+has_device_info
+has_log
+```
+
+作用：
+
+```text
+作为最终结果表的骨架。
+```
+
+后续所有日志指标、连续 ERROR 指标、风险指标，都要往这张表上合并。
+
+---
+
+### 4. df_log_summary
+
+字段：
+
+```text
+device_id
+first_log_date
+latest_stat_date
+total_alarm_count
+error_days
+warn_days
+```
+
+作用：
+
+```text
+统计每台设备的基础日志指标。
+```
+
+核心方法：
+
+```sql
+GROUP BY device_id
+MIN(stat_date)
+MAX(stat_date)
+SUM(alarm_count)
+SUM(CASE WHEN ...)
+```
+
+---
+
+### 5. df_latest_status
+
+字段：
+
+```text
+device_id
+latest_status
+```
+
+作用：
+
+```text
+取每台设备最近一条日志对应的状态。
+```
+
+核心方法：
+
+```sql
+ROW_NUMBER() OVER (
+    PARTITION BY device_id
+    ORDER BY stat_date DESC
+)
+```
+
+---
+
+### 6. df_consecutive_error
+
+字段：
+
+```text
+device_id
+max_consecutive_error_days
+```
+
+作用：
+
+```text
+计算每台设备最长连续 ERROR 天数。
+```
+
+核心方法：
+
+```text
+Gap & Island
+LAG()
+日期连续性判断
+SUM(...) OVER(...)
+GROUP BY
+MAX()
+```
+
+---
+
+### 7. final_base
+
+作用：
+
+```text
+把所有中间表按 device_id 合并。
+```
+
+合并时必须从 `df_device_base` 出发：
+
+```sql
+FROM df_device_base AS ddb
+LEFT JOIN df_log_summary AS log
+    ON ddb.device_id = log.device_id
+LEFT JOIN df_latest_status AS ls
+    ON ddb.device_id = ls.device_id
+LEFT JOIN df_consecutive_error AS dce
+    ON ddb.device_id = dce.device_id
+```
+
+原因：
+
+```text
+df_device_base 是设备全集骨架。
+从它出发，才能保证没有日志的设备、未知设备都不丢失。
+```
+
+---
+
+## 八、本题涉及的核心 SQL Pattern
+
+| 分析目标 | 使用 Pattern |
+|---|---|
+| 构造设备全集 | UNION |
+| 判断是否存在台账 / 日志 | EXISTS |
+| 聚合报警次数、ERROR 天数、WARN 天数 | GROUP BY + SUM + CASE WHEN |
+| 获取最近状态 | ROW_NUMBER() |
+| 识别连续 ERROR | Gap & Island |
+| 判断日期是否连续 | LAG(stat_date) + INTERVAL 1 DAY |
+| 合并多个中间表 | LEFT JOIN |
+| 空值补 0 | COALESCE |
+| 风险排名 | RANK() |
+| 风险等级判断 | CASE WHEN |
+
+---
+
+## 九、本题关键难点
+
+### 1. 先构造分析对象全集
+
+综合分析不能一上来就从某一张原始表直接查。
+
+本题的分析对象是：
+
+```text
+df_device 中登记过的设备
++
+df_log 中出现过的设备
+```
+
+所以必须先构造：
+
+```text
+all_devices
+```
+
+---
+
+### 2. GROUP BY 不会自动带出最小日期对应的其他字段
+
+例如：
+
+```sql
+MIN(stat_date)
+```
+
+只会返回最小日期值，不会自动返回该日期对应的 `status` 或 `alarm_count`。
+
+如果要取某个日期对应的整行，需要使用：
+
+```sql
+ROW_NUMBER()
+```
+
+---
+
+### 3. latest_status 不能用 MAX(status)
+
+`MAX(status)` 只是字符串比较，不代表最近日期状态。
+
+正确方式是：
+
+```text
+按日期降序排名，取 rn = 1。
+```
+
+---
+
+### 4. 连续 ERROR 必须判断日期是否连续
+
+不能只看上一条是否也是 ERROR。
+
+必须判断：
+
+```text
+当前日期是否等于上一条日期 + 1 天。
+```
+
+否则日期断档的 ERROR 会被错误地算成连续。
+
+---
+
+### 5. 最终合并必须以设备全集为主表
+
+最终合并时必须从：
+
+```text
+df_device_base
+```
+
+出发。
+
+不能从 `df_log_summary` 出发，因为它只包含有日志的设备，会漏掉 `has_log = False` 的设备。
+
+不能从 `df_consecutive_error` 出发，因为它只包含出现过 ERROR 的设备，会漏掉从未 ERROR 的设备。
+
+---
+
+### 6. COALESCE 很重要
+
+没有日志、没有 ERROR 的设备，在 LEFT JOIN 后相关指标会是 `NULL`。
+
+需要用：
+
+```sql
+COALESCE(字段, 0)
+```
+
+把空值转成 0。
+
+否则风险分数计算会出现：
+
+```text
+数字 + NULL = NULL
+```
+
+---
+
+## 十、本题完成情况
+
+当前已完成：
+
+```text
+SQL 轨道
+```
+
+暂未完成：
+
+```text
+Pandas 轨道
+```
+
+Pandas 轨道计划在后续完成第六类题型后，再作为综合复盘补写。
+
+---
+
+## 十一、本题收获
+
+本题第一次完整训练了从原始数据到设备级综合分析表的流程。
+
+相比单项 Pattern 练习，本题的重点不只是语法，而是：
+
+```text
+1. 如何确定分析对象；
+2. 如何拆分中间结果；
+3. 如何给每张中间表明确职责；
+4. 如何把多个中间表合并成最终分析结果；
+5. 如何处理数据缺失、未知设备、无日志设备；
+6. 如何把技术字段转化为业务风险等级。
+```
+
+本题标志着训练从“单一 SQL 语法练习”进入到“综合业务分析流程组织”。
