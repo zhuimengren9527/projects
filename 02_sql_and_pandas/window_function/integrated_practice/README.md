@@ -3879,3 +3879,1913 @@ Pandas 轨道计划在后续完成第六类题型后，再作为综合复盘补�
 ```
 
 本题标志着训练从“单一 SQL 语法练习”进入到“综合业务分析流程组织”。
+
+# 综合练习 3：用户订单行为综合分析
+
+## 1. 练习目标
+
+本练习模拟一个用户订单分析场景，基于用户信息表和订单明细表，生成用户级付费汇总结果表。
+
+本练习的重点不是复杂业务分析，而是综合复用前面已经学习过的 SQL / Pandas 核心 Pattern。
+
+本练习覆盖以下能力：
+
+| Pattern | 本练习中的体现 |
+|---|---|
+| 数据清洗 | 订单状态标准化、订单去重 |
+| Join / Subquery | 构造用户全集、判断用户信息是否存在、判断是否有有效支付订单 |
+| Ranking | 订单去重、支付金额排名 |
+| Cumulative Analysis | 累计支付金额 |
+| Time Comparison | 上一笔支付日期、距离最近支付天数 |
+| Gap & Island | 最长连续支付天数 |
+| CASE WHEN / 条件分支 | 生成用户标签 `user_tag` |
+| SQL / Pandas 对照 | 同一业务逻辑分别用 SQL 和 Pandas 实现 |
+
+---
+
+## 2. 数据表说明
+
+### 2.1 用户表：`df_users`
+
+| 字段名 | 含义 |
+|---|---|
+| `user_id` | 用户 ID |
+| `user_name` | 用户名称 |
+| `city` | 城市 |
+| `register_date` | 注册日期 |
+| `user_level` | 用户等级 |
+
+### 2.2 订单表：`df_orders`
+
+| 字段名 | 含义 |
+|---|---|
+| `order_id` | 订单 ID |
+| `user_id` | 用户 ID |
+| `order_date` | 下单日期 |
+| `pay_date` | 支付日期 |
+| `order_status` | 订单状态 |
+| `order_amount` | 订单金额 |
+| `paid_amount` | 实际支付金额 |
+| `channel` | 下单渠道 |
+| `updated_at` | 订单更新时间 |
+
+---
+
+## 3. 数据问题
+
+原始数据中存在以下问题：
+
+1. `order_status` 大小写不统一。
+2. `order_status` 前后可能存在空格。
+3. 同一个 `order_id` 可能有多条记录，需要保留最新记录。
+4. 有些订单未支付、取消或退款。
+5. 订单表中存在用户表没有登记的用户。
+6. 用户表中存在没有任何订单的用户。
+7. 有些用户没有有效支付订单。
+8. 同一用户同一天可能有多笔有效支付订单。
+
+---
+
+## 4. 业务规则
+
+### 4.1 订单状态标准化
+
+订单状态统一处理为：
+
+```sql
+UPPER(TRIM(order_status)) AS normalized_status
+```
+
+Pandas 对应写法：
+
+```python
+df_orders['order_status'].str.strip().str.upper()
+```
+
+---
+
+### 4.2 订单去重规则
+
+同一个 `order_id` 如果出现多条记录，只保留 `updated_at` 最新的一条。
+
+SQL 使用：
+
+```sql
+ROW_NUMBER() OVER (
+    PARTITION BY order_id
+    ORDER BY updated_at DESC
+) AS rn
+```
+
+Pandas 使用：
+
+```python
+.sort_values(by=['order_id', 'updated_at'], ascending=[True, False])
+.assign(
+    rn=lambda x: x.groupby('order_id').cumcount() + 1
+)
+.loc[lambda x: x['rn'] == 1]
+```
+
+注意：
+
+```text
+这里是订单去重，目的是解决同一个 order_id 出现多条记录的问题。
+```
+
+---
+
+### 4.3 有效支付订单规则
+
+有效支付订单需要同时满足：
+
+```text
+normalized_status = 'PAID'
+pay_date 不为空
+paid_amount 不为空
+```
+
+SQL 条件：
+
+```sql
+WHERE normalized_status = 'PAID'
+  AND pay_date IS NOT NULL
+  AND paid_amount IS NOT NULL
+```
+
+Pandas 条件：
+
+```python
+.loc[
+    lambda x: (
+        (x['normalized_status'] == 'PAID')
+        & (x['pay_date'].notna())
+        & (x['paid_amount'].notna())
+    )
+]
+```
+
+---
+
+## 5. 最终输出表
+
+最终生成用户级汇总表：
+
+```text
+df_user_paid_summary
+```
+
+字段如下：
+
+| 字段名 | 含义 |
+|---|---|
+| `user_id` | 用户 ID |
+| `user_name` | 用户名称 |
+| `city` | 城市 |
+| `has_user_info` | 是否存在用户基础信息 |
+| `has_paid_order` | 是否存在有效支付订单 |
+| `paid_order_count` | 有效支付订单数量 |
+| `total_paid_amount` | 累计有效支付金额 |
+| `latest_paid_date` | 最近一次有效支付日期 |
+| `previous_paid_date` | 最近一次有效支付日期的上一笔支付日期 |
+| `days_since_latest_paid` | 距离最近一次有效支付过去多少天 |
+| `max_consecutive_paid_days` | 最长连续支付天数 |
+| `paid_amount_rank` | 累计支付金额排名 |
+| `user_tag` | 用户标签 |
+
+---
+
+## 6. SQL 轨道流程
+
+### 6.1 订单状态标准化
+
+目标：
+
+```text
+清洗 order_status，生成 normalized_status。
+```
+
+核心 SQL：
+
+```sql
+UPPER(TRIM(order_status)) AS normalized_status
+```
+
+---
+
+### 6.2 保留最新订单信息
+
+目标：
+
+```text
+同一个 order_id 只保留 updated_at 最新的一条记录。
+```
+
+核心 SQL：
+
+```sql
+ROW_NUMBER() OVER (
+    PARTITION BY order_id
+    ORDER BY updated_at DESC
+) AS rn
+```
+
+使用 `ROW_NUMBER()` 的原因：
+
+```text
+每个 order_id 只需要保留一条最新记录。
+如果使用 RANK()，遇到并列可能会保留多行。
+```
+
+---
+
+### 6.3 保留有效支付订单
+
+目标：
+
+```text
+筛选真正完成支付的订单。
+```
+
+核心 SQL：
+
+```sql
+WHERE normalized_status = 'PAID'
+  AND pay_date IS NOT NULL
+  AND paid_amount IS NOT NULL
+```
+
+生成有效支付订单表：
+
+```text
+df_valid_paid
+```
+
+---
+
+### 6.4 付费订单明细表
+
+目标：
+
+```text
+在有效支付订单明细层面，计算用户内支付顺序、上一笔支付日期、支付间隔和累计支付金额。
+```
+
+核心字段：
+
+| 字段名 | 生成方式 |
+|---|---|
+| `paid_order_seq` | `ROW_NUMBER()` |
+| `previous_paid_date` | `LAG(pay_date)` |
+| `days_from_previous_paid` | 当前支付日期 - 上一笔支付日期 |
+| `running_paid_amount` | 累计支付金额 |
+
+核心 SQL：
+
+```sql
+ROW_NUMBER() OVER (
+    PARTITION BY user_id
+    ORDER BY pay_date, order_id
+) AS paid_order_seq
+```
+
+```sql
+LAG(pay_date) OVER (
+    PARTITION BY user_id
+    ORDER BY pay_date, order_id
+) AS previous_paid_date
+```
+
+```sql
+SUM(paid_amount) OVER (
+    PARTITION BY user_id
+    ORDER BY pay_date, order_id
+    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+) AS running_paid_amount
+```
+
+---
+
+### 6.5 构造用户全集
+
+目标：
+
+```text
+用户全集 = 用户表中的 user_id + 订单表中的 user_id
+```
+
+核心 SQL：
+
+```sql
+SELECT user_id
+FROM df_users
+
+UNION
+
+SELECT user_id
+FROM df_orders
+```
+
+说明：
+
+```text
+UNION 是纵向拼接，并自动去重。
+这里用于得到完整用户集合。
+```
+
+---
+
+### 6.6 判断是否存在用户信息
+
+目标：
+
+```text
+判断每个 user_id 是否存在于 df_users 中。
+```
+
+核心 SQL：
+
+```sql
+CASE
+    WHEN EXISTS (
+        SELECT
+            1
+        FROM df_users AS u
+        WHERE u.user_id = ds.user_id
+    )
+    THEN TRUE
+    ELSE FALSE
+END AS has_user_info
+```
+
+说明：
+
+```text
+EXISTS 只判断是否存在匹配记录。
+如果只是判断有没有，不需要 JOIN 明细表。
+```
+
+---
+
+### 6.7 判断是否存在有效支付订单
+
+目标：
+
+```text
+判断每个用户是否存在有效支付订单。
+```
+
+核心 SQL：
+
+```sql
+CASE
+    WHEN EXISTS (
+        SELECT
+            1
+        FROM df_valid_paid AS vp
+        WHERE vp.user_id = dub.user_id
+    )
+    THEN TRUE
+    ELSE FALSE
+END AS has_paid_order
+```
+
+注意：
+
+```text
+这里不需要直接 JOIN df_valid_paid。
+因为一名用户可能有多笔有效支付订单，直接 JOIN 明细表会把用户级结果撑成多行。
+```
+
+---
+
+### 6.8 有效支付订单数量
+
+目标：
+
+```text
+按用户统计有效支付订单数量。
+```
+
+核心 SQL：
+
+```sql
+SELECT
+    user_id,
+    COUNT(*) AS paid_order_count
+FROM df_valid_paid
+GROUP BY user_id
+```
+
+接回用户基础表：
+
+```sql
+LEFT JOIN valid_paid_count AS vpc
+    ON dub.user_id = vpc.user_id
+```
+
+空值处理：
+
+```sql
+COALESCE(vpc.paid_order_count, 0) AS paid_order_count
+```
+
+---
+
+### 6.9 累计有效支付金额
+
+目标：
+
+```text
+按用户统计累计有效支付金额。
+```
+
+核心 SQL：
+
+```sql
+SELECT
+    user_id,
+    SUM(paid_amount) AS total_paid_amount
+FROM df_valid_paid
+GROUP BY user_id
+```
+
+空值处理：
+
+```sql
+COALESCE(tp.total_paid_amount, 0) AS total_paid_amount
+```
+
+---
+
+### 6.10 最近一次有效支付日期
+
+目标：
+
+```text
+按用户取最近一次有效支付日期。
+```
+
+核心 SQL：
+
+```sql
+SELECT
+    user_id,
+    MAX(pay_date) AS latest_paid_date
+FROM df_valid_paid
+GROUP BY user_id
+```
+
+注意：
+
+```text
+这里使用 GROUP BY + MAX()。
+不需要使用窗口函数 OVER()。
+```
+
+原因：
+
+```text
+目标是生成用户级汇总表，一名用户压缩成一行。
+```
+
+---
+
+### 6.11 最近一次有效支付日期的上一笔支付日期
+
+目标：
+
+```text
+找到每个用户最近一次支付记录对应的上一笔支付日期。
+```
+
+核心逻辑：
+
+```text
+先用 LAG() 算出每笔支付订单的上一笔支付日期。
+再用 ROW_NUMBER() 找每个用户最近一笔支付订单。
+最后取最近一笔订单那一行的 previous_paid_date。
+```
+
+核心 SQL：
+
+```sql
+LAG(pay_date) OVER (
+    PARTITION BY user_id
+    ORDER BY pay_date, order_id
+) AS previous_paid_date
+```
+
+```sql
+ROW_NUMBER() OVER (
+    PARTITION BY user_id
+    ORDER BY pay_date DESC, order_id DESC
+) AS rn
+```
+
+说明：
+
+```text
+这里用 ROW_NUMBER()，不用 RANK()。
+因为最终结果需要一名用户只保留一行。
+```
+
+---
+
+### 6.12 距离最近一次有效支付的天数
+
+目标：
+
+```text
+计算分析日期与最近一次有效支付日期之间相差多少天。
+```
+
+分析日期：
+
+```sql
+DATE '2026-07-15'
+```
+
+核心 SQL：
+
+```sql
+date_diff('day', latest_paid_date, DATE '2026-07-15') AS days_since_latest_paid
+```
+
+注意：
+
+```text
+SQL 中日期常量不要直接写 2026-07-15。
+应该写成 DATE '2026-07-15'。
+```
+
+错误写法：
+
+```sql
+2026-07-15 - latest_paid_date
+```
+
+原因：
+
+```text
+SQL 可能会把 2026-07-15 理解成数字运算：
+2026 - 7 - 15
+```
+
+---
+
+### 6.13 用户最长连续支付天数
+
+目标：
+
+```text
+计算每个用户最长连续支付天数。
+```
+
+核心方法：
+
+```text
+Gap & Island 连续区间识别。
+```
+
+分析流程：
+
+```text
+同一用户同一天支付先去重
+↓
+按 user_id、pay_date 排序
+↓
+用 LAG() 取上一笔支付日期
+↓
+判断当前支付日期是否开启新连续段
+↓
+用 SUM() OVER() 生成连续段编号
+↓
+按 user_id + 连续段编号统计每段连续天数
+↓
+再按 user_id 取最大连续天数
+```
+
+判断是否开启新连续段：
+
+```sql
+CASE
+    WHEN previous_paid_date IS NULL
+      OR pay_date > previous_paid_date + INTERVAL 1 DAY
+    THEN 1
+    ELSE 0
+END AS consecutive_start_sign
+```
+
+生成连续段编号：
+
+```sql
+SUM(consecutive_start_sign) OVER (
+    PARTITION BY user_id
+    ORDER BY pay_date
+) AS phase_sign
+```
+
+统计每段连续天数：
+
+```sql
+SELECT
+    user_id,
+    phase_sign,
+    COUNT(*) AS consecutive_paid_days
+FROM phase_table
+GROUP BY user_id, phase_sign
+```
+
+取最大连续支付天数：
+
+```sql
+SELECT
+    user_id,
+    MAX(consecutive_paid_days) AS max_consecutive_paid_days
+FROM consecutive_count
+GROUP BY user_id
+```
+
+---
+
+### 6.14 支付金额排名
+
+目标：
+
+```text
+按照 total_paid_amount 从高到低给用户排名。
+```
+
+核心 SQL：
+
+```sql
+RANK() OVER (
+    ORDER BY total_paid_amount DESC
+) AS paid_amount_rank
+```
+
+说明：
+
+```text
+RANK() 是窗口函数，必须写 OVER()。
+OVER() 里面的 ORDER BY 用来生成排名。
+SELECT 语句最后的 ORDER BY 只控制最终结果显示顺序。
+```
+
+区别：
+
+```text
+RANK() OVER(ORDER BY total_paid_amount DESC)
+= 生成排名列
+
+ORDER BY total_paid_amount DESC
+= 只控制结果表显示顺序
+```
+
+---
+
+### 6.15 生成用户标签
+
+目标：
+
+```text
+根据用户信息、支付行为和活跃情况生成用户标签。
+```
+
+标签规则：
+
+| 条件 | 标签 |
+|---|---|
+| `has_user_info = FALSE` | `UNKNOWN_USER` |
+| `has_paid_order = FALSE` | `NO_PAID` |
+| `total_paid_amount >= 500 AND days_since_latest_paid <= 7` | `HIGH_VALUE_ACTIVE` |
+| `total_paid_amount >= 500 AND days_since_latest_paid > 7` | `HIGH_VALUE_SILENT` |
+| `paid_order_count >= 3` | `REPEAT_USER` |
+| 其他 | `NORMAL_USER` |
+
+核心 SQL：
+
+```sql
+CASE
+    WHEN has_user_info = FALSE THEN 'UNKNOWN_USER'
+    WHEN has_paid_order = FALSE THEN 'NO_PAID'
+    WHEN total_paid_amount >= 500 AND days_since_latest_paid <= 7 THEN 'HIGH_VALUE_ACTIVE'
+    WHEN total_paid_amount >= 500 AND days_since_latest_paid > 7 THEN 'HIGH_VALUE_SILENT'
+    WHEN paid_order_count >= 3 THEN 'REPEAT_USER'
+    ELSE 'NORMAL_USER'
+END AS user_tag
+```
+
+注意：
+
+```text
+CASE WHEN 从上往下判断。
+一旦命中某个条件，后面的条件不再执行。
+```
+
+因此：
+
+```text
+UNKNOWN_USER 必须放在前面。
+否则订单表中存在、用户表中不存在的用户，可能会被错误标记成高价值用户或复购用户。
+```
+
+---
+
+## 7. Pandas 轨道流程
+
+### 7.1 订单状态标准化
+
+SQL：
+
+```sql
+UPPER(TRIM(order_status))
+```
+
+Pandas：
+
+```python
+df_orders_clean = (
+    df_orders
+    .assign(
+        normalized_status=lambda x: (
+            x['order_status']
+            .str.strip()
+            .str.upper()
+        )
+    )
+)
+```
+
+---
+
+### 7.2 保留最新订单信息
+
+SQL：
+
+```sql
+ROW_NUMBER() OVER (
+    PARTITION BY order_id
+    ORDER BY updated_at DESC
+)
+```
+
+Pandas：
+
+```python
+df_latest_orders = (
+    df_orders_clean
+    .sort_values(
+        by=['order_id', 'updated_at'],
+        ascending=[True, False]
+    )
+    .assign(
+        updated_at_rank=lambda x: (
+            x.groupby('order_id')
+            .cumcount()
+            + 1
+        )
+    )
+    .loc[lambda x: x['updated_at_rank'] == 1]
+    .drop(columns='updated_at_rank')
+    .reset_index(drop=True)
+)
+```
+
+说明：
+
+```text
+SQL ROW_NUMBER()
+对应 Pandas sort_values() + groupby().cumcount() + 1。
+```
+
+---
+
+### 7.3 保留有效支付订单
+
+Pandas 多条件筛选：
+
+```python
+df_valid_paid_pd = (
+    df_latest_orders
+    .loc[
+        lambda x: (
+            (x['normalized_status'] == 'PAID')
+            & (x['pay_date'].notna())
+            & (x['paid_amount'].notna())
+        )
+    ]
+    .sort_values(by=['user_id', 'pay_date', 'order_id'])
+    .reset_index(drop=True)
+)
+```
+
+注意：
+
+```text
+多个条件之间用 &。
+每个条件都要用括号包起来。
+```
+
+---
+
+### 7.4 付费订单明细表
+
+Pandas：
+
+```python
+df_paid_detail_pd = (
+    df_valid_paid_pd
+    .sort_values(by=['user_id', 'pay_date', 'order_id'])
+    .assign(
+        paid_order_seq=lambda x: (
+            x.groupby('user_id')
+            .cumcount()
+            + 1
+        ),
+        previous_paid_date=lambda x: (
+            x.groupby('user_id')['pay_date']
+            .shift(1)
+        ),
+        days_from_previous_paid=lambda x: (
+            x['pay_date'] - x['previous_paid_date']
+        ).dt.days.astype('Int64'),
+        running_paid_amount=lambda x: (
+            x.groupby('user_id')['paid_amount']
+            .cumsum()
+        )
+    )
+    [
+        [
+            'order_id',
+            'user_id',
+            'pay_date',
+            'paid_amount',
+            'paid_order_seq',
+            'previous_paid_date',
+            'days_from_previous_paid',
+            'running_paid_amount'
+        ]
+    ]
+    .sort_values(by=['user_id', 'pay_date', 'order_id'])
+    .reset_index(drop=True)
+)
+```
+
+对应关系：
+
+| SQL | Pandas |
+|---|---|
+| `ROW_NUMBER()` | `groupby().cumcount() + 1` |
+| `LAG()` | `groupby().shift(1)` |
+| `SUM() OVER(...)` | `groupby().cumsum()` |
+| `date_diff()` | `(date2 - date1).dt.days` |
+
+---
+
+### 7.5 构造用户全集 + 判断是否存在用户信息
+
+SQL 的 `UNION`：
+
+```sql
+SELECT user_id FROM df_users
+UNION
+SELECT user_id FROM df_orders
+```
+
+Pandas 对应：
+
+```python
+df_user_id_collect_pd = (
+    pd.concat(
+        [
+            df_orders[['user_id']],
+            df_users[['user_id']]
+        ],
+        ignore_index=True
+    )
+    .drop_duplicates()
+    .sort_values(by='user_id')
+    .reset_index(drop=True)
+)
+```
+
+SQL 的 `EXISTS`：
+
+```sql
+EXISTS (
+    SELECT 1
+    FROM df_users AS u
+    WHERE u.user_id = ds.user_id
+)
+```
+
+Pandas 对应：
+
+```python
+x['user_id'].isin(df_users['user_id'])
+```
+
+完整写法：
+
+```python
+df_user_base_pd = (
+    df_user_id_collect_pd
+    .merge(
+        df_users[['user_id', 'user_name', 'city']],
+        how='left',
+        on='user_id'
+    )
+    .assign(
+        has_user_info=lambda x: (
+            x['user_id'].isin(df_users['user_id'])
+        )
+    )
+    [
+        [
+            'user_id',
+            'user_name',
+            'city',
+            'has_user_info'
+        ]
+    ]
+    .sort_values(by='user_id')
+    .reset_index(drop=True)
+)
+```
+
+---
+
+### 7.6 判断是否存在有效支付订单
+
+SQL 的 `EXISTS` 对应 Pandas 的 `isin()`：
+
+```python
+df_user_base_pd = (
+    df_user_base_pd
+    .assign(
+        has_paid_order=lambda x: (
+            x['user_id'].isin(df_valid_paid_pd['user_id'])
+        )
+    )
+)
+```
+
+说明：
+
+```text
+isin() 表示存在。
+~isin() 表示不存在。
+```
+
+---
+
+### 7.7 有效支付订单数量
+
+Pandas：
+
+```python
+df_paid_order_count_pd = (
+    df_valid_paid_pd
+    .groupby('user_id', as_index=False)
+    .agg(
+        paid_order_count=('order_id', 'count')
+    )
+)
+
+df_user_base_pd = (
+    df_user_base_pd
+    .merge(
+        df_paid_order_count_pd,
+        how='left',
+        on='user_id'
+    )
+    .assign(
+        paid_order_count=lambda x: (
+            x['paid_order_count']
+            .fillna(0)
+            .astype('Int64')
+        )
+    )
+)
+```
+
+说明：
+
+```text
+groupby(..., as_index=False) 可以让分组字段保留为普通列。
+这样后面 merge(on='user_id') 更清楚。
+```
+
+---
+
+### 7.8 累计有效支付金额
+
+Pandas：
+
+```python
+df_total_paid_amount_pd = (
+    df_valid_paid_pd
+    .groupby('user_id', as_index=False)
+    .agg(
+        total_paid_amount=('paid_amount', 'sum')
+    )
+)
+
+df_user_base_pd = (
+    df_user_base_pd
+    .merge(
+        df_total_paid_amount_pd,
+        how='left',
+        on='user_id'
+    )
+    .assign(
+        total_paid_amount=lambda x: (
+            x['total_paid_amount']
+            .fillna(0)
+            .astype('Int64')
+        )
+    )
+)
+```
+
+---
+
+### 7.9 最近一次有效支付日期
+
+Pandas：
+
+```python
+df_latest_valid_paid_date_pd = (
+    df_valid_paid_pd
+    .groupby('user_id', as_index=False)
+    .agg(
+        latest_paid_date=('pay_date', 'max')
+    )
+)
+
+df_user_base_pd = (
+    df_user_base_pd
+    .merge(
+        df_latest_valid_paid_date_pd,
+        how='left',
+        on='user_id'
+    )
+)
+```
+
+说明：
+
+```text
+取每个用户最大支付日期，用 groupby + max。
+不需要排序。
+```
+
+---
+
+### 7.10 最近一次有效支付日期的上一笔支付日期
+
+Pandas：
+
+```python
+df_user_base_pd = (
+    df_valid_paid_pd
+    .sort_values(by=['user_id', 'pay_date', 'order_id'])
+    .assign(
+        previous_paid_date=lambda x: (
+            x.groupby('user_id')['pay_date']
+            .shift(1)
+        )
+    )
+    .sort_values(
+        by=['user_id', 'pay_date', 'order_id'],
+        ascending=[True, False, False]
+    )
+    .assign(
+        date_rank=lambda x: (
+            x.groupby('user_id')
+            .cumcount()
+            + 1
+        )
+    )
+    .loc[
+        lambda x: x['date_rank'] == 1,
+        ['user_id', 'previous_paid_date']
+    ]
+    .merge(
+        df_user_base_pd,
+        how='right',
+        on='user_id'
+    )
+    [
+        [
+            'user_id',
+            'user_name',
+            'city',
+            'has_user_info',
+            'has_paid_order',
+            'paid_order_count',
+            'total_paid_amount',
+            'latest_paid_date',
+            'previous_paid_date'
+        ]
+    ]
+    .sort_values(by='user_id')
+    .reset_index(drop=True)
+)
+```
+
+注意：
+
+```text
+这里必须使用 groupby('user_id')['pay_date'].shift(1)。
+不能直接 x['pay_date'].shift(1)。
+```
+
+原因：
+
+```text
+普通 shift(1) 是整张表整体向下错一行。
+groupby().shift(1) 是每个用户组内向下错一行。
+```
+
+---
+
+### 7.11 距离最近一次有效支付的天数
+
+SQL：
+
+```sql
+date_diff('day', latest_paid_date, DATE '2026-07-15')
+```
+
+Pandas：
+
+```python
+analysis_date = pd.Timestamp('2026-07-15')
+
+df_user_base_pd = (
+    df_user_base_pd
+    .assign(
+        days_since_latest_paid=lambda x: (
+            analysis_date - x['latest_paid_date']
+        )
+    )
+)
+```
+
+如果希望得到整数天数：
+
+```python
+df_user_base_pd = (
+    df_user_base_pd
+    .assign(
+        days_since_latest_paid=lambda x: (
+            analysis_date - x['latest_paid_date']
+        ).dt.days.astype('Int64')
+    )
+)
+```
+
+区别：
+
+```text
+不加 .dt.days：
+结果是 Timedelta 类型，显示为 5 days、14 days。
+
+加 .dt.days：
+结果是整数天数，显示为 5、14。
+```
+
+如果保留 Timedelta 类型，后续判断要写：
+
+```python
+x['days_since_latest_paid'] <= pd.Timedelta(days=7)
+```
+
+如果转成整数天数，后续判断可以写：
+
+```python
+x['days_since_latest_paid'] <= 7
+```
+
+---
+
+### 7.12 用户最长连续支付天数
+
+目标：
+
+```text
+计算每个用户最长连续支付天数。
+同一用户同一天多笔支付，只算 1 天。
+```
+
+Pandas：
+
+```python
+df_user_base_pd = (
+    df_valid_paid_pd
+    [['user_id', 'pay_date']]
+    .drop_duplicates()
+    .sort_values(by=['user_id', 'pay_date'])
+    .assign(
+        previous_pay_date=lambda x: (
+            x.groupby('user_id')['pay_date']
+            .shift(1)
+        ),
+        start_sign=lambda x: (
+            (x['previous_pay_date'].isna())
+            |
+            (x['pay_date'] > x['previous_pay_date'] + pd.Timedelta(days=1))
+        ).astype('Int64'),
+        phase_sign=lambda x: (
+            x.groupby('user_id')['start_sign']
+            .cumsum()
+        )
+    )
+    .groupby(['user_id', 'phase_sign'], as_index=False)
+    .agg(
+        paid_days_count=('pay_date', 'count')
+    )
+    .groupby('user_id', as_index=False)
+    .agg(
+        max_consecutive_paid_days=('paid_days_count', 'max')
+    )
+    .merge(
+        df_user_base_pd,
+        how='right',
+        on='user_id'
+    )
+    .assign(
+        max_consecutive_paid_days=lambda x: (
+            x['max_consecutive_paid_days']
+            .fillna(0)
+            .astype('Int64')
+        )
+    )
+)
+```
+
+核心逻辑：
+
+```text
+按 user_id + pay_date 去重
+↓
+每个用户内取上一笔支付日期
+↓
+判断是否开启新连续段
+↓
+累计生成 phase_sign
+↓
+按 user_id + phase_sign 统计每段连续天数
+↓
+按 user_id 取最大值
+```
+
+注意：
+
+```text
+这里的 drop_duplicates() 不是订单去重。
+这里是支付日期去重。
+
+订单去重：
+按 order_id 去重，解决同一个订单重复记录。
+
+支付日期去重：
+按 user_id + pay_date 去重，解决同一天多笔订单不能算多天。
+```
+
+---
+
+### 7.13 支付金额排名
+
+SQL：
+
+```sql
+RANK() OVER (
+    ORDER BY total_paid_amount DESC
+)
+```
+
+Pandas：
+
+```python
+df_user_base_pd = (
+    df_user_base_pd
+    .assign(
+        paid_amount_rank=lambda x: (
+            x['total_paid_amount']
+            .rank(method='min', ascending=False)
+            .astype('Int64')
+        )
+    )
+    .sort_values(by=['paid_amount_rank', 'user_id'])
+    .reset_index(drop=True)
+)
+```
+
+说明：
+
+```text
+rank(method='min') 对应 SQL RANK()。
+rank(method='dense') 对应 SQL DENSE_RANK()。
+cumcount() + 1 对应 SQL ROW_NUMBER()。
+```
+
+---
+
+### 7.14 生成用户标签
+
+Pandas 推荐使用 `np.select()`，对应 SQL 的 `CASE WHEN`。
+
+如果 `days_since_latest_paid` 是 Timedelta 类型：
+
+```python
+import numpy as np
+
+df_user_paid_summary_pd = (
+    df_user_base_pd
+    .assign(
+        user_tag=lambda x: np.select(
+            [
+                x['has_user_info'] == False,
+                x['has_paid_order'] == False,
+                (x['total_paid_amount'] >= 500) & (x['days_since_latest_paid'] <= pd.Timedelta(days=7)),
+                (x['total_paid_amount'] >= 500) & (x['days_since_latest_paid'] > pd.Timedelta(days=7)),
+                x['paid_order_count'] >= 3
+            ],
+            [
+                'UNKNOWN_USER',
+                'NO_PAID',
+                'HIGH_VALUE_ACTIVE',
+                'HIGH_VALUE_SILENT',
+                'REPEAT_USER'
+            ],
+            default='NORMAL_USER'
+        )
+    )
+    .sort_values(by=['paid_amount_rank', 'user_id'])
+    .reset_index(drop=True)
+)
+```
+
+如果 `days_since_latest_paid` 是整数天数：
+
+```python
+import numpy as np
+
+df_user_paid_summary_pd = (
+    df_user_base_pd
+    .assign(
+        user_tag=lambda x: np.select(
+            [
+                x['has_user_info'] == False,
+                x['has_paid_order'] == False,
+                (x['total_paid_amount'] >= 500) & (x['days_since_latest_paid'] <= 7),
+                (x['total_paid_amount'] >= 500) & (x['days_since_latest_paid'] > 7),
+                x['paid_order_count'] >= 3
+            ],
+            [
+                'UNKNOWN_USER',
+                'NO_PAID',
+                'HIGH_VALUE_ACTIVE',
+                'HIGH_VALUE_SILENT',
+                'REPEAT_USER'
+            ],
+            default='NORMAL_USER'
+        )
+    )
+    .sort_values(by=['paid_amount_rank', 'user_id'])
+    .reset_index(drop=True)
+)
+```
+
+说明：
+
+```text
+np.select() 会从上往下判断。
+先命中的条件优先返回。
+```
+
+因此：
+
+```text
+UNKNOWN_USER 和 NO_PAID 要放在前面。
+```
+
+---
+
+## 8. SQL / Pandas 核心语法对照表
+
+| SQL | Pandas |
+|---|---|
+| `UPPER(TRIM(col))` | `str.strip().str.upper()` |
+| `UNION` | `pd.concat([...]).drop_duplicates()` |
+| `UNION ALL` | `pd.concat([...])` |
+| `LEFT JOIN` | `merge(..., how='left')` |
+| `RIGHT JOIN` | `merge(..., how='right')` |
+| `EXISTS` | `isin()` |
+| `NOT EXISTS` | `~isin()` |
+| `GROUP BY + COUNT` | `groupby().agg(... count ...)` |
+| `GROUP BY + SUM` | `groupby().agg(... sum ...)` |
+| `GROUP BY + MAX` | `groupby().agg(... max ...)` |
+| `ROW_NUMBER()` | `sort_values() + groupby().cumcount() + 1` |
+| `RANK()` | `rank(method='min')` |
+| `DENSE_RANK()` | `rank(method='dense')` |
+| `LAG()` | `groupby().shift(1)` |
+| `SUM() OVER(...)` | `groupby().cumsum()` |
+| `date_diff('day', a, b)` | `(b - a).dt.days` |
+| `COALESCE(x, 0)` | `fillna(0)` |
+| `CASE WHEN` | `np.select()` |
+
+---
+
+## 9. 易错点总结
+
+### 9.1 Pandas 单中括号和双中括号的区别
+
+错误写法：
+
+```python
+df_users['user_id']
+```
+
+这会得到一个 `Series`。
+
+如果后面写：
+
+```python
+.sort_values(by='user_id')
+```
+
+会报错：
+
+```text
+TypeError: Series.sort_values() got an unexpected keyword argument 'by'
+```
+
+原因：
+
+```text
+Series 是一维数据，没有列名排序的概念，所以 Series.sort_values() 不接受 by 参数。
+```
+
+正确写法：
+
+```python
+df_users[['user_id']]
+```
+
+这会得到一个 `DataFrame`，可以继续写：
+
+```python
+.sort_values(by='user_id')
+```
+
+记忆点：
+
+```text
+df['col']     → Series
+df[['col']]   → DataFrame
+
+Series.sort_values()          → 不写 by
+DataFrame.sort_values(by=...) → 要写 by
+```
+
+---
+
+### 9.2 `rank()` 和 `cumcount()` 的区别
+
+Pandas：
+
+```python
+rank(method='min')
+```
+
+对应 SQL：
+
+```sql
+RANK()
+```
+
+特点：
+
+```text
+允许并列名次。
+后续名次会跳号。
+```
+
+Pandas：
+
+```python
+groupby().cumcount() + 1
+```
+
+对应 SQL：
+
+```sql
+ROW_NUMBER()
+```
+
+特点：
+
+```text
+强制编号。
+适合每组只保留一条记录。
+```
+
+订单去重应该使用：
+
+```text
+ROW_NUMBER() / cumcount() + 1
+```
+
+不建议使用：
+
+```text
+RANK() / rank(method='min')
+```
+
+因为如果 `updated_at` 并列，`RANK()` 可能保留多行。
+
+---
+
+### 9.3 `GROUP BY + MAX()` 和 `MAX() OVER()` 的区别
+
+```text
+GROUP BY + MAX()
+= 把多行压缩成一行，生成用户级汇总表。
+
+MAX() OVER()
+= 不压缩行，只是在每一行旁边增加窗口计算结果。
+```
+
+本练习中计算 `latest_paid_date` 应使用：
+
+```sql
+SELECT
+    user_id,
+    MAX(pay_date) AS latest_paid_date
+FROM df_valid_paid
+GROUP BY user_id
+```
+
+Pandas 对应：
+
+```python
+df_valid_paid_pd.groupby('user_id', as_index=False).agg(
+    latest_paid_date=('pay_date', 'max')
+)
+```
+
+---
+
+### 9.4 `EXISTS` 不需要额外 JOIN 明细表
+
+如果只是判断用户是否有有效支付订单：
+
+SQL：
+
+```sql
+EXISTS (...)
+```
+
+Pandas：
+
+```python
+isin()
+```
+
+即可。
+
+不要为了判断是否存在而直接 JOIN 明细表。
+
+原因：
+
+```text
+一名用户可能有多笔有效支付订单。
+直接 JOIN 明细表会把用户级结果撑成多行。
+```
+
+---
+
+### 9.5 `shift(1)` 必须按用户分组
+
+错误写法：
+
+```python
+x['pay_date'].shift(1)
+```
+
+问题：
+
+```text
+整张表整体向下错一行。
+不同用户之间可能串行。
+```
+
+正确写法：
+
+```python
+x.groupby('user_id')['pay_date'].shift(1)
+```
+
+含义：
+
+```text
+每个用户内部找上一笔支付日期。
+```
+
+SQL 对应：
+
+```sql
+LAG(pay_date) OVER (
+    PARTITION BY user_id
+    ORDER BY pay_date
+)
+```
+
+---
+
+### 9.6 日期字段不能直接使用 `.dt.days`
+
+错误理解：
+
+```python
+x['pay_date'].dt.days
+```
+
+问题：
+
+```text
+pay_date 是日期，不是时间差。
+.dt.days 用于 Timedelta，不用于普通日期字段。
+```
+
+正确写法：
+
+```python
+(x['pay_date'] - x['previous_pay_date']).dt.days
+```
+
+或者直接用日期比较：
+
+```python
+x['pay_date'] > x['previous_pay_date'] + pd.Timedelta(days=1)
+```
+
+记忆点：
+
+```text
+日期字段：
+x['pay_date'].dt.day
+= 取日期是当月第几天。
+
+时间差字段：
+(x['pay_date'] - x['previous_pay_date']).dt.days
+= 取两个日期相差多少天。
+```
+
+---
+
+### 9.7 SQL 日期常量要写成 DATE 类型
+
+推荐写法：
+
+```sql
+DATE '2026-07-15'
+```
+
+错误写法：
+
+```sql
+2026-07-15
+```
+
+原因：
+
+```text
+SQL 可能把它理解成数字运算：
+2026 - 7 - 15
+```
+
+---
+
+### 9.8 Timedelta 和整数天数的区别
+
+Pandas 中：
+
+```python
+analysis_date - x['latest_paid_date']
+```
+
+结果是 Timedelta：
+
+```text
+5 days
+14 days
+NaT
+```
+
+如果加：
+
+```python
+.dt.days
+```
+
+结果是整数天数：
+
+```text
+5
+14
+<NA>
+```
+
+区别：
+
+```text
+Timedelta 类型：
+显示更直观，但比较时要用 pd.Timedelta(days=7)。
+
+整数天数：
+更接近 SQL date_diff('day', ...)，比较时可以直接和 7 比较。
+```
+
+---
+
+### 9.9 订单去重和支付日期去重不是一回事
+
+订单去重：
+
+```text
+按 order_id 去重。
+解决同一个订单重复记录的问题。
+```
+
+支付日期去重：
+
+```text
+按 user_id + pay_date 去重。
+解决同一用户同一天多笔订单不能算多天的问题。
+```
+
+计算 `max_consecutive_paid_days` 时，应该先做支付日期去重：
+
+```python
+df_valid_paid_pd[['user_id', 'pay_date']].drop_duplicates()
+```
+
+原因：
+
+```text
+最长连续支付天数统计的是“天数”，不是“订单数”。
+```
+
+---
+
+### 9.10 LEFT JOIN 和 RIGHT JOIN 的主表方向
+
+这两种写法语义上可以等价：
+
+```python
+df_user_base_pd.merge(metric_table, how='left', on='user_id')
+```
+
+和：
+
+```python
+metric_table.merge(df_user_base_pd, how='right', on='user_id')
+```
+
+区别：
+
+```text
+left merge：
+主表在前，补充表在后。
+阅读顺序更接近“给主表加字段”。
+
+right merge：
+补充表在前，主表在后。
+代码可以运行，但阅读时需要反向理解。
+```
+
+练习阶段建议：
+
+```text
+优先把用户级主表 df_user_base_pd 放前面，用 left merge。
+```
+
+---
+
+## 10. 本练习最终能回答的问题
+
+最终结果表可以回答：
+
+1. 哪些用户存在于用户表？
+2. 哪些用户只存在于订单表、不存在于用户表？
+3. 哪些用户没有有效支付订单？
+4. 每个用户有效支付了多少笔订单？
+5. 每个用户累计支付金额是多少？
+6. 每个用户最近一次有效支付日期是什么？
+7. 每个用户最近一次有效支付日期的上一笔支付日期是什么？
+8. 每个用户距离最近一次支付过去了多少天？
+9. 每个用户最长连续支付天数是多少？
+10. 每个用户按累计支付金额排名第几？
+11. 每个用户属于哪一种标签？
+
+---
+
+## 11. 当前完成情况
+
+已完成：
+
+- SQL 轨道
+- Pandas 轨道
+- 订单状态标准化
+- 订单去重
+- 有效支付订单筛选
+- 付费订单明细表
+- 用户全集构造
+- 用户信息存在性判断
+- 有效支付订单存在性判断
+- 有效支付订单数量统计
+- 累计有效支付金额统计
+- 最近支付日期计算
+- 上一笔支付日期计算
+- 距离最近支付天数计算
+- 最长连续支付天数计算
+- 支付金额排名
+- 用户标签生成
+
+后续可以继续补充：
+
+- SQL / Pandas 最终结果一致性校验
+- 边界条件测试
+- 可视化分析
+- 示例输出截图
+
+---
+
+## 12. 练习收获
+
+本练习的核心收获是把前面分散学习过的 SQL / Pandas Pattern 综合起来使用。
+
+尤其是以下能力：
+
+```text
+从业务问题拆成中间表
+明确每一步的主表
+判断什么时候用 JOIN
+判断什么时候用 EXISTS / isin()
+判断什么时候用 GROUP BY
+判断什么时候用窗口函数
+区分 ROW_NUMBER / RANK / DENSE_RANK
+用 Gap & Island 识别连续区间
+用 COALESCE / fillna 处理缺失值
+用 CASE WHEN / np.select 做业务标签
+```
+
+这类题目接近真实数据分析工作的常见流程：
+
+```text
+清洗数据
+↓
+构造有效业务数据
+↓
+生成用户级主表
+↓
+逐步补充指标
+↓
+计算排名或连续区间
+↓
+生成业务标签
+↓
+输出最终分析表
+```
+
+---
+
+## 13. Git Commit 建议
+
+如果本练习已经完成 SQL 和 Pandas 双轨：
+
+```bash
+git add 06_integrated_practice/02_order_user_analysis.ipynb 06_integrated_practice/README.md
+git commit -m "feat: complete order user integrated analysis"
+git push
+```
+
+如果目录是：
+
+```text
+integrated_practice/
+```
+
+则使用：
+
+```bash
+git add integrated_practice/02_order_user_analysis.ipynb integrated_practice/README.md
+git commit -m "feat: complete order user integrated analysis"
+git push
+```
