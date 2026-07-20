@@ -859,3 +859,721 @@ df.dropna()
 7. 每一条检查语句都应具有明确目的，并服务于后续清洗规则判断。
 
 下一步将在 Notebook 中创建 `df_clean` 副本，并正式开始文本字段标准化。
+
+## 14. 实际清洗过程
+
+本次清洗始终保留原始数据 `df_raw`，所有操作均在清洗副本 `df_cleaning` 上完成。
+
+```python
+df_cleaning = df_raw.copy()
+```
+
+这样可以避免清洗过程直接修改原始数据，并方便后续对比和追溯。
+
+---
+
+### 14.1 定义伪缺失值
+
+不同字段中存在多种表示缺失的字符串，需要统一转换为 Pandas 缺失值。
+
+```python
+missing_markers = {
+    "": pd.NA,
+    "N/A": pd.NA,
+    "NULL": pd.NA,
+    "-": pd.NA,
+    "UNKNOWN": pd.NA
+}
+```
+
+文本字段通常按照以下顺序标准化：
+
+```text
+转换为 Pandas string 类型
+    ↓
+删除首尾空格
+    ↓
+统一大小写
+    ↓
+将伪缺失值转换为 pd.NA
+```
+
+---
+
+### 14.2 清洗 `device_id`
+
+处理规则：
+
+- 转换为 Pandas `string` 类型；
+- 删除首尾空格；
+- 统一转换为大写；
+- 将伪缺失值转换为 `pd.NA`；
+- 保存设备编号缺失的记录；
+- 删除 `device_id` 缺失的整行。
+
+```python
+df_cleaning["device_id"] = (
+    df_cleaning["device_id"]
+    .astype("string")
+    .str.strip()
+    .str.upper()
+    .replace(missing_markers)
+)
+```
+
+删除之前，先将问题记录保存为独立 DataFrame：
+
+```python
+removed_missing_device = df_cleaning.loc[
+    df_cleaning["device_id"].isna()
+].copy()
+```
+
+再删除设备编号缺失的整行：
+
+```python
+df_cleaning = (
+    df_cleaning
+    .dropna(subset=["device_id"])
+    .reset_index(drop=True)
+)
+```
+
+本次共删除 1 条记录，对应原始数据中的 `record_id = 7`。
+
+删除整行的原因是：
+
+> `device_id` 是设备级分析的关键标识。设备编号缺失后，无法判断该条记录属于哪台设备。
+
+被删除记录已经单独保存，可以通过 `record_id` 与原始数据对应。
+
+---
+
+### 14.3 清洗并验证 `site`
+
+处理规则：
+
+- 转换为 Pandas `string` 类型；
+- 删除首尾空格；
+- 统一转换为大写；
+- 将伪缺失值转换为 `pd.NA`。
+
+```python
+df_cleaning["site"] = (
+    df_cleaning["site"]
+    .astype("string")
+    .str.strip()
+    .str.upper()
+    .replace(missing_markers)
+)
+```
+
+清洗后分别检查三类问题。
+
+#### 缺失值检查
+
+```python
+df_cleaning["site"].isna().sum()
+```
+
+结果为 `0`，说明清洗后的站点编号不存在缺失值。
+
+#### 格式检查
+
+站点编号的预期格式为：
+
+```text
+R + 两位数字
+```
+
+例如：
+
+```text
+R34
+R35
+R38
+```
+
+检查代码：
+
+```python
+site_format_valid_mask = (
+    df_cleaning["site"]
+    .str.fullmatch(r"R\d{2}")
+)
+
+invalid_site_format_mask = (
+    df_cleaning["site"].notna()
+    & ~site_format_valid_mask
+)
+```
+
+清洗后未发现格式异常的站点编号。
+
+#### 业务合法范围检查
+
+```python
+valid_sites = {
+    "R34",
+    "R35",
+    "R36",
+    "R37",
+    "R38"
+}
+```
+
+只检查格式正确但不属于合法站点清单的记录：
+
+```python
+invalid_site_value_mask = (
+    df_cleaning["site"].notna()
+    & site_format_valid_mask
+    & ~df_cleaning["site"].isin(valid_sites)
+)
+```
+
+清洗后未发现不在合法清单中的站点编号。
+
+格式检查与合法范围检查的职责不同：
+
+| 检查 | 示例 | 含义 |
+|---|---|---|
+| 格式异常 | `R3A` | 编号写法不符合规则 |
+| 业务范围异常 | `R99` | 格式正确，但不是合法站点 |
+| 正常 | `R34` | 格式和业务范围均正确 |
+
+---
+
+### 14.4 清洗并验证 `status`
+
+处理规则：
+
+- 转换为 Pandas `string` 类型；
+- 删除首尾空格；
+- 统一转换为大写；
+- 将伪缺失值转换为 `pd.NA`。
+
+```python
+df_cleaning["status"] = (
+    df_cleaning["status"]
+    .astype("string")
+    .str.strip()
+    .str.upper()
+    .replace(missing_markers)
+)
+```
+
+标准化后使用以下代码查看状态类别及数量：
+
+```python
+df_cleaning["status"].value_counts(dropna=False)
+```
+
+标准化结果：
+
+```text
+<NA>      5
+NORMAL    3
+ERROR     3
+```
+
+说明：
+
+- 原始数据中的空格、`N/A`、`NULL`、`-` 和 `unknown` 已转换为缺失值；
+- 非缺失状态只剩下 `NORMAL` 和 `ERROR`；
+- 标准化后共识别出 5 个状态缺失值。
+
+此时暂不立即填充缺失值，而是先保留 `pd.NA`，用于生成全表缺失报告。
+
+---
+
+### 14.5 清洗并验证 `signal_strength`
+
+处理规则：
+
+- 转换为 Pandas `string` 类型；
+- 删除首尾空格；
+- 统一伪缺失值；
+- 转换为浮点数；
+- 缺失值暂时保留。
+
+```python
+df_cleaning["signal_strength"] = (
+    df_cleaning["signal_strength"]
+    .astype("string")
+    .str.strip()
+    .str.upper()
+    .replace(missing_markers)
+    .astype("float")
+)
+```
+
+转换后的数据类型：
+
+```text
+float64
+```
+
+使用 `describe()` 检查数值分布：
+
+```python
+df_cleaning["signal_strength"].describe()
+```
+
+结果如下：
+
+| 统计指标 | 结果 |
+|---|---:|
+| 非缺失数量 | 6 |
+| 平均值 | 19.20 |
+| 标准差 | 1.20 |
+| 最小值 | 17.80 |
+| 第一四分位数 | 18.55 |
+| 中位数 | 18.90 |
+| 第三四分位数 | 19.70 |
+| 最大值 | 21.20 |
+
+清洗后共有：
+
+- 6 个有效数值；
+- 5 个缺失值；
+- 有效值范围为 `17.8` 至 `21.2`。
+
+由于当前没有可靠的业务上下限，因此不自行设置异常范围。
+
+`signal_strength` 的缺失值可能本身具有业务分析价值，因此保留缺失，不删除，也不填充。
+
+---
+
+### 14.6 清洗并验证 `technician`
+
+处理规则：
+
+- 转换为 Pandas `string` 类型；
+- 删除首尾空格；
+- 统一转换为大写；
+- 将伪缺失值转换为 `pd.NA`。
+
+```python
+df_cleaning["technician"] = (
+    df_cleaning["technician"]
+    .astype("string")
+    .str.strip()
+    .str.upper()
+    .replace(missing_markers)
+)
+```
+
+标准化后查看类别及数量：
+
+```python
+df_cleaning["technician"].value_counts(dropna=False)
+```
+
+结果：
+
+```text
+<NA>    4
+LI      2
+WANG    2
+ZHAO    2
+CHEN    1
+```
+
+说明：
+
+- 姓名前后空格已经清除；
+- 姓名大小写已经统一；
+- 空字符串、`N/A`、`NULL` 和 `-` 已转换为缺失值；
+- 标准化后共识别出 4 个缺失值。
+
+此时先保留 `pd.NA`，等待全表缺失报告生成后再进行业务填充。
+
+---
+
+### 14.7 转换并验证 `inspect_time`
+
+`inspect_time` 原始内容未发现明显格式异常，主要问题是字段类型为文本。
+
+使用 `pd.to_datetime()` 转换：
+
+```python
+df_cleaning["inspect_time"] = pd.to_datetime(
+    df_cleaning["inspect_time"],
+    format="%Y-%m-%d %H:%M",
+    errors="coerce"
+)
+```
+
+参数说明：
+
+- `format="%Y-%m-%d %H:%M"`：明确指定原始时间格式；
+- `errors="coerce"`：无法解析的值统一转换为 `NaT`。
+
+转换后检查类型：
+
+```python
+df_cleaning["inspect_time"].dtype
+```
+
+结果为日期时间类型：
+
+```text
+datetime64
+```
+
+检查转换失败或原始缺失数量：
+
+```python
+df_cleaning["inspect_time"].isna().sum()
+```
+
+结果为 `0`，说明所有时间均成功转换。
+
+---
+
+## 15. 生成缺失情况报告
+
+所有字段完成格式标准化和伪缺失值统一后，再生成全表缺失报告。
+
+先统计每个字段的缺失数量：
+
+```python
+missing_count = df_cleaning.isna().sum()
+```
+
+再统计每个字段的缺失比例：
+
+```python
+missing_rate = df_cleaning.isna().mean()
+```
+
+将两个结果组合为 DataFrame：
+
+```python
+missing_report = pd.DataFrame({
+    "missing_count": missing_count,
+    "missing_rate": missing_rate
+})
+```
+
+将字段名从索引转换为普通列：
+
+```python
+missing_report = (
+    missing_report
+    .reset_index(names="column")
+)
+```
+
+缺失比例保留四位小数，并按照缺失数量降序排列：
+
+```python
+missing_report["missing_rate"] = (
+    missing_report["missing_rate"]
+    .round(4)
+)
+
+missing_report = (
+    missing_report
+    .sort_values(
+        by=["missing_count", "column"],
+        ascending=[False, True]
+    )
+    .reset_index(drop=True)
+)
+```
+
+最终缺失报告：
+
+| column | missing_count | missing_rate |
+|---|---:|---:|
+| `signal_strength` | 5 | 0.4545 |
+| `status` | 5 | 0.4545 |
+| `technician` | 4 | 0.3636 |
+| `device_id` | 0 | 0.0000 |
+| `inspect_time` | 0 | 0.0000 |
+| `record_id` | 0 | 0.0000 |
+| `site` | 0 | 0.0000 |
+
+该报告描述的是：
+
+> 删除 `device_id` 缺失记录之后、业务填充之前，当前清洗表中各字段的真实缺失情况。
+
+---
+
+## 16. 根据业务含义处理缺失值
+
+缺失报告生成后，再对不同字段采用不同的处理策略。
+
+### 16.1 填充 `status`
+
+状态缺失不代表整条记录无效，因此统一标记为 `UNKNOWN`：
+
+```python
+df_cleaning["status"] = (
+    df_cleaning["status"]
+    .fillna("UNKNOWN")
+)
+```
+
+### 16.2 填充 `technician`
+
+巡检人员缺失不代表巡检记录无效，因此统一标记为 `UNASSIGNED`：
+
+```python
+df_cleaning["technician"] = (
+    df_cleaning["technician"]
+    .fillna("UNASSIGNED")
+)
+```
+
+### 16.3 保留 `signal_strength` 缺失值
+
+`signal_strength` 缺失可能具有设备异常或数据传输异常的分析价值，因此：
+
+```text
+不删除
+不填充
+继续保留 NaN
+```
+
+最终缺失值处理策略如下：
+
+| 字段 | 处理方式 | 业务原因 |
+|---|---|---|
+| `device_id` | 删除整行 | 无法判断记录所属设备 |
+| `status` | 填充 `UNKNOWN` | 状态未知，但记录仍然有效 |
+| `signal_strength` | 保留缺失 | 缺失本身可能具有分析价值 |
+| `technician` | 填充 `UNASSIGNED` | 人员未知不代表记录无效 |
+| `site` | 无须处理 | 清洗后不存在缺失 |
+| `inspect_time` | 无须处理 | 时间全部成功转换 |
+
+---
+
+## 17. 最终验证
+
+清洗完成后，使用断言将清洗规则转换为自动化验证条件。
+
+```python
+# 1. 验证数据行数
+assert len(df_cleaning) == 11, \
+    "清洗后数据行数不等于 11"
+
+# 2. 验证 record_id
+assert df_cleaning["record_id"].notna().all(), \
+    "record_id 仍存在缺失值"
+
+assert df_cleaning["record_id"].is_unique, \
+    "record_id 存在重复值"
+
+# 3. 验证 device_id
+assert df_cleaning["device_id"].notna().all(), \
+    "device_id 仍存在缺失值"
+
+assert (
+    df_cleaning["device_id"]
+    .str.fullmatch(r"R\d{2}-\d{2}")
+    .all()
+), "device_id 存在格式异常"
+
+# 4. 验证 site
+valid_sites = {"R34", "R35", "R36", "R37", "R38"}
+
+assert df_cleaning["site"].notna().all(), \
+    "site 仍存在缺失值"
+
+assert (
+    df_cleaning["site"]
+    .str.fullmatch(r"R\d{2}")
+    .all()
+), "site 存在格式异常"
+
+assert (
+    df_cleaning["site"]
+    .isin(valid_sites)
+    .all()
+), "site 存在不在合法清单中的编号"
+
+# 5. 验证 status
+valid_statuses = {"NORMAL", "ERROR", "UNKNOWN"}
+
+assert df_cleaning["status"].notna().all(), \
+    "status 仍存在缺失值"
+
+assert (
+    df_cleaning["status"]
+    .isin(valid_statuses)
+    .all()
+), "status 存在未预期的状态值"
+
+# 6. 验证 signal_strength
+assert pd.api.types.is_float_dtype(
+    df_cleaning["signal_strength"]
+), "signal_strength 不是浮点数类型"
+
+assert (
+    df_cleaning["signal_strength"].isna().sum() == 5
+), "signal_strength 缺失数量不等于 5"
+
+# 7. 验证 technician
+assert df_cleaning["technician"].notna().all(), \
+    "technician 仍存在缺失值"
+
+# 8. 验证 inspect_time
+assert pd.api.types.is_datetime64_any_dtype(
+    df_cleaning["inspect_time"]
+), "inspect_time 不是日期时间类型"
+
+assert df_cleaning["inspect_time"].notna().all(), \
+    "inspect_time 存在转换失败或缺失值"
+
+print("所有清洗规则验证通过。")
+```
+
+---
+
+### 17.1 验证删除记录的可追溯性
+
+```python
+assert len(removed_missing_device) == 1, \
+    "因 device_id 缺失而删除的记录数量异常"
+
+assert removed_missing_device["device_id"].isna().all(), \
+    "被删除记录中存在非缺失的 device_id"
+
+assert (
+    len(df_cleaning) + len(removed_missing_device)
+    == len(df_raw)
+), "清洗结果无法完整对应原始数据"
+```
+
+进一步验证所有记录编号均可追溯：
+
+```python
+cleaned_record_ids = set(df_cleaning["record_id"])
+removed_record_ids = set(removed_missing_device["record_id"])
+raw_record_ids = set(df_raw["record_id"])
+
+assert (
+    cleaned_record_ids | removed_record_ids
+    == raw_record_ids
+), "清洗过程中存在记录丢失或新增"
+
+print("删除记录与原始数据的对应关系验证通过。")
+```
+
+该验证证明：
+
+```text
+保留的记录
++
+被删除的记录
+=
+全部原始记录
+```
+
+---
+
+## 18. 最终清洗结果
+
+原始数据共有 12 条记录。
+
+由于其中 1 条记录缺少 `device_id`，最终清洗结果保留 11 条有效记录。
+
+清洗完成后：
+
+- `record_id` 无缺失、无重复；
+- `device_id` 无缺失，格式统一为 `Rxx-xx`；
+- `site` 无缺失，格式统一为 `Rxx`；
+- `status` 无缺失，只包含 `NORMAL`、`ERROR` 和 `UNKNOWN`；
+- `signal_strength` 已转换为 `float64`，保留 5 个缺失值；
+- `technician` 无缺失，原缺失值填充为 `UNASSIGNED`；
+- `inspect_time` 已转换为日期时间类型，无转换失败；
+- 被删除记录已单独保存，可以通过 `record_id` 追溯到原始数据。
+
+---
+
+## 19. 关键方法总结
+
+| 方法 | 本次练习中的作用 |
+|---|---|
+| `.copy()` | 创建独立清洗副本或保存待删除记录 |
+| `.astype("string")` | 转换为 Pandas 可空字符串类型 |
+| `.str.strip()` | 删除字符串首尾空白字符 |
+| `.str.upper()` | 统一文本大小写 |
+| `.replace()` | 将伪缺失值统一转换为 `pd.NA` |
+| `.isna()` | 判断缺失值 |
+| `.notna()` | 判断非缺失值 |
+| `.dropna(subset=...)` | 根据指定字段删除缺失记录 |
+| `.fillna()` | 根据业务规则填充缺失值 |
+| `.value_counts(dropna=False)` | 查看类别字段的类别及数量 |
+| `.describe()` | 查看数值字段的统计分布 |
+| `.str.fullmatch()` | 检查字符串是否完全符合规定格式 |
+| `.isin()` | 检查值是否属于合法业务范围 |
+| `pd.to_datetime()` | 转换日期时间字段 |
+| `assert` | 自动验证清洗结果是否符合规则 |
+
+---
+
+## 20. 本次练习复盘
+
+本次练习建立了完整的缺失值清洗流程：
+
+```text
+检查原始表达
+    ↓
+建立字段级清洗规则
+    ↓
+保留原始数据
+    ↓
+创建清洗副本
+    ↓
+标准化文本格式
+    ↓
+统一伪缺失值
+    ↓
+检查类别、类型和数值分布
+    ↓
+生成全表缺失报告
+    ↓
+根据业务含义处理缺失值
+    ↓
+使用断言验证最终结果
+```
+
+本次练习得到的主要认识：
+
+1. 数据清洗中的每个查询都应具有明确目的。
+2. `isna()` 只能识别真正的缺失值，不能自动识别普通字符串形式的伪缺失值。
+3. 不同字段即使都存在缺失，也不能采用相同的处理方式。
+4. 删除记录属于破坏性操作，应提前保存被删除记录并保留追溯依据。
+5. 类别字段适合使用 `value_counts()` 检查，连续数值字段更适合使用 `describe()`。
+6. 格式正确不代表业务值一定合法，需要区分格式规则和合法范围。
+7. 缺失报告应在伪缺失值标准化之后、业务填充之前生成。
+8. 最终验证不应只依赖肉眼查看，而应使用断言将规则自动化。
+9. `record_id` 用于追溯原始记录，DataFrame 索引只表示当前行位置。
+10. 链式写法不是越短越好，当前阶段优先保证每一步逻辑清楚。
+
+---
+
+## 21. 完成进度
+
+- [x] 创建练习目录
+- [x] 构造模拟巡检数据
+- [x] 检查原始数据结构
+- [x] 检查字段原始表达
+- [x] 制定字段级清洗规则
+- [x] 创建清洗副本
+- [x] 清洗 `device_id`
+- [x] 保存并删除关键字段缺失记录
+- [x] 清洗并验证 `site`
+- [x] 清洗并验证 `status`
+- [x] 清洗并验证 `signal_strength`
+- [x] 清洗并验证 `technician`
+- [x] 转换并验证 `inspect_time`
+- [x] 生成字段级缺失报告
+- [x] 根据业务含义处理缺失值
+- [x] 使用断言验证最终结果
+- [x] 验证删除记录的可追溯性
+- [x] 完成本次练习复盘
